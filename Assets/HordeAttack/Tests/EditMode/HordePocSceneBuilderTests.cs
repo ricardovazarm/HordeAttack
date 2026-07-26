@@ -135,8 +135,13 @@ namespace HordeAttack.Tests
                 $"The player starts at {origin}, which is outside the ground plate spanning {ground.min} to {ground.max}.");
         }
 
+        /// <summary>
+        /// Measured from the player rather than from the world origin. Those are not the same place
+        /// if the rig is ever moved, and the distance that matters is how much warning the player
+        /// gets — at 3 m they got about a second, which read as starting the game already grabbed.
+        /// </summary>
         [Test]
-        public void Build_PutsTheDummiesInFrontOfThePlayerNotAcrossTheArena()
+        public void Build_StartsTheDummiesFarEnoughAwayToBeSeenComing()
         {
             var origin = PlayerOrigin().transform.position;
 
@@ -146,8 +151,67 @@ namespace HordeAttack.Tests
                     new Vector3(origin.x, 0f, origin.z),
                     new Vector3(dummy.transform.position.x, 0f, dummy.transform.position.z));
 
-                Assert.That(distance, Is.EqualTo(HordePocLayout.k_DummyRingRadius).Within(k_Tolerance),
-                    $"{dummy.name} is {distance:F2} m from the player instead of {HordePocLayout.k_DummyRingRadius} m.");
+                Assert.That(distance, Is.InRange(
+                        HordePocLayout.k_SpawnNearDistance - k_Tolerance,
+                        HordePocLayout.k_SpawnFarDistance + k_Tolerance),
+                    $"{dummy.name} starts {distance:F2} m from the player, outside the " +
+                    $"{HordePocLayout.k_SpawnNearDistance}-{HordePocLayout.k_SpawnFarDistance} m band.");
+            }
+        }
+
+        [Test]
+        public void Build_StartsEveryDummyInFrontOfThePlayer()
+        {
+            var origin = PlayerOrigin().transform;
+
+            foreach (var dummy in Dummies())
+            {
+                var toDummy = dummy.transform.position - origin.position;
+                toDummy.y = 0f;
+
+                Assert.That(Vector3.Dot(origin.forward, toDummy.normalized), Is.GreaterThan(0f),
+                    $"{dummy.name} starts behind or beside the player, who would be grabbed by " +
+                    "something they never saw.");
+            }
+        }
+
+        [Test]
+        public void Build_StaggersHowFarAwayTheDummiesStart()
+        {
+            var origin = PlayerOrigin().transform.position;
+            var distances = Dummies()
+                .Select(d => Vector2.Distance(
+                    new Vector2(origin.x, origin.z),
+                    new Vector2(d.transform.position.x, d.transform.position.z)))
+                .ToArray();
+
+            for (int i = 0; i < distances.Length; i++)
+            {
+                for (int j = i + 1; j < distances.Length; j++)
+                {
+                    Assert.That(Mathf.Abs(distances[i] - distances[j]), Is.GreaterThan(0.1f),
+                        $"Two dummies start {distances[i]:F2} m and {distances[j]:F2} m out, close " +
+                        "enough to arrive together and read as a formation.");
+                }
+            }
+        }
+
+        /// <summary>
+        /// A creature spawned past the edge of the plate has nothing under it and drops out of the
+        /// world before it ever reaches the player.
+        /// </summary>
+        [Test]
+        public void Build_StartsEveryDummyOnTheGround()
+        {
+            var ground = Root(HordePocLayout.k_GroundName).GetComponent<Collider>().bounds;
+
+            foreach (var dummy in Dummies())
+            {
+                var footprint = new Vector3(dummy.transform.position.x, ground.center.y, dummy.transform.position.z);
+
+                Assert.That(ground.Contains(footprint), Is.True,
+                    $"{dummy.name} starts at {dummy.transform.position}, off a plate spanning " +
+                    $"{ground.min} to {ground.max}.");
             }
         }
 
@@ -171,17 +235,30 @@ namespace HordeAttack.Tests
         }
 
         [Test]
-        public void Build_PlacesDummiesOnTheRingAroundThePlayer()
+        public void Build_StandsDummiesAtTheRightHeight()
         {
             foreach (var dummy in Dummies())
             {
-                var position = dummy.transform.position;
-                var horizontalDistance = new Vector2(position.x, position.z).magnitude;
-
-                Assert.That(horizontalDistance, Is.EqualTo(HordePocLayout.k_DummyRingRadius).Within(k_Tolerance),
-                    $"{dummy.name} is not on the dummy ring.");
-                Assert.That(position.y, Is.EqualTo(HordePocLayout.k_DummyCenterHeight).Within(k_Tolerance),
+                Assert.That(dummy.transform.position.y, Is.EqualTo(HordePocLayout.k_DummyCenterHeight).Within(k_Tolerance),
                     $"{dummy.name} is not standing at the right height.");
+            }
+        }
+
+        /// <summary>
+        /// How fast a creature may close on the player is a design limit, not a physics one: past
+        /// it the gap between seeing one coming and having it on you is shorter than a reaction.
+        /// </summary>
+        [Test]
+        public void Build_KeepsDummiesAtOrBelowTheDesignSpeedLimit()
+        {
+            foreach (var dummy in Dummies())
+            {
+                float speed = dummy.GetComponent<EnemyLocomotion>().settings.moveSpeed;
+
+                Assert.That(speed, Is.GreaterThan(0f), $"{dummy.name} cannot move at all.");
+                Assert.That(speed, Is.LessThanOrEqualTo(EnemyLocomotionSettings.k_MaxMoveSpeed),
+                    $"{dummy.name} closes at {speed:F1} m/s, above the " +
+                    $"{EnemyLocomotionSettings.k_MaxMoveSpeed:F1} m/s the player can react to.");
             }
         }
 
@@ -402,7 +479,7 @@ namespace HordeAttack.Tests
         {
             foreach (var fist in Fists())
             {
-                Assert.That(fist.GetComponent<HandVelocityTracker>(), Is.Not.Null,
+                Assert.That(fist.GetComponent<PointVelocityTracker>(), Is.Not.Null,
                     $"{fist.name} cannot measure how fast it is swinging.");
                 Assert.That(fist.GetComponent<PunchDetector>(), Is.Not.Null,
                     $"{fist.name} cannot land a punch.");
@@ -463,24 +540,183 @@ namespace HordeAttack.Tests
         }
 
         /// <summary>
-        /// Mass is what decides whether a punch visibly throws an enemy, so it is a gameplay value
-        /// and not an incidental physics default.
+        /// Mass no longer decides how far a punch throws an enemy — knockback is applied as a
+        /// velocity, so distance is the same whatever the creature weighs. It still decides how
+        /// they shove each other about, and Fase 2b's thrown-enemy impacts read off it.
         /// </summary>
         [Test]
-        public void Build_MakesDummiesLightEnoughToBeThrownByAPunch()
+        public void Build_GivesDummiesTheMassTheRestOfThePhysicsAssumes()
         {
-            var settings = new PunchSettings();
-            float standardImpulse = settings.minSpeed * settings.impulsePerSpeed;
-
             foreach (var dummy in Dummies())
             {
-                var body = dummy.GetComponent<Rigidbody>();
-
-                Assert.That(body.mass, Is.EqualTo(HordePocLayout.k_DummyMass).Within(1e-3f));
-                Assert.That(standardImpulse / body.mass, Is.GreaterThan(1f),
-                    $"{dummy.name} weighs {body.mass} kg, so even the weakest punch that counts " +
-                    "barely moves it and the hit reads as a miss.");
+                Assert.That(dummy.GetComponent<Rigidbody>().mass,
+                    Is.EqualTo(HordePocLayout.k_DummyMass).Within(1e-3f));
             }
+        }
+
+        /// <summary>
+        /// How far a punch throws is the punch model's business — see
+        /// <c>PunchResolverTests.Defaults_ThrowAnEnemyTheDistanceTheDesignCallsFor</c>. What the
+        /// arena has to answer for is whether the creature lands back on the plate afterwards.
+        /// </summary>
+        [Test]
+        public void Build_LeavesRoomForAPunchedEnemyToLandOnTheArena()
+        {
+            var settings = new PunchSettings();
+
+            Assert.That(settings.maxKnockbackDistance, Is.LessThan(HordePocLayout.k_ArenaRadius),
+                $"A full power punch throws an enemy {settings.maxKnockbackDistance:F1} m across an " +
+                $"arena that only reaches {HordePocLayout.k_ArenaRadius:F1} m, so it lands off the " +
+                "edge of the world.");
+        }
+
+        [Test]
+        public void Build_GivesThePlayerABodyForTheHordeToAimAt()
+        {
+            var body = PlayerBody();
+            var proxy = body.GetComponent<PlayerBodyProxy>();
+
+            Assert.That(proxy, Is.Not.Null, "Nothing derives a torso from the headset pose.");
+            Assert.That(proxy.head, Is.Not.Null,
+                "The body proxy has no head to follow, so it would sit at the rig origin forever.");
+            Assert.That(proxy.head, Is.EqualTo(PlayerOrigin().Camera.transform),
+                "The body follows something other than the player's camera.");
+
+            Assert.That(body.GetComponent<PlayerLatchTarget>(), Is.Not.Null,
+                "The player is not a latch target, so no enemy can ever find them.");
+            Assert.That(body.GetComponent<LatchFeedback>(), Is.Not.Null,
+                "Nothing tells the player they were grabbed.");
+        }
+
+        [Test]
+        public void Build_HangsTheBodyOffTheCameraOffset()
+        {
+            Assert.That(PlayerBody().transform.parent, Is.EqualTo(CameraOffset()),
+                "The body has to hang off the camera offset, which is the rig's floor plane; " +
+                "anywhere else and eye height is measured against the wrong zero.");
+        }
+
+        [Test]
+        public void Build_CreatesEveryBodyAnchor()
+        {
+            var body = PlayerBody().transform;
+
+            foreach (var layout in HordePocLayout.k_BodyAnchors)
+            {
+                var child = body.Find(layout.name);
+                Assert.That(child, Is.Not.Null, $"The player has no '{layout.name}' anchor.");
+
+                var anchor = child.GetComponent<LatchAnchor>();
+                Assert.That(anchor, Is.Not.Null, $"'{layout.name}' is an empty object, not an anchor.");
+                Assert.That(anchor.height, Is.EqualTo(layout.height),
+                    $"'{layout.name}' is in the wrong band, so the wrong style of enemy aims at it.");
+                Assert.That(anchor.heightFraction, Is.EqualTo(layout.heightFraction).Within(k_Tolerance));
+                Assert.That(anchor.hangDrop, Is.EqualTo(layout.hangDrop).Within(k_Tolerance));
+                Assert.That(anchor.bodyOffset.x, Is.EqualTo(layout.bodyOffset.x).Within(k_Tolerance));
+                Assert.That(anchor.bodyOffset.y, Is.EqualTo(layout.bodyOffset.y).Within(k_Tolerance));
+            }
+        }
+
+        [Test]
+        public void Build_StartsEveryAnchorFree()
+        {
+            foreach (var anchor in PlayerBody().GetComponentsInChildren<LatchAnchor>(true))
+            {
+                Assert.That(anchor.isFree, Is.True,
+                    $"'{anchor.name}' starts out taken and nothing could ever latch onto it.");
+            }
+        }
+
+        [Test]
+        public void Build_PutsAnArmAnchorOnEveryHand()
+        {
+            var offset = CameraOffset();
+
+            foreach (var anchorName in HordePocLayout.k_HandAnchorNames)
+            {
+                var arm = offset.Find(anchorName).Find(HordePocLayout.k_ArmAnchorName);
+
+                Assert.That(arm, Is.Not.Null, $"'{anchorName}' has no arm anchor to be grabbed by.");
+                Assert.That(arm.GetComponent<LatchAnchor>(), Is.Not.Null);
+                Assert.That(arm.localPosition.z, Is.LessThan(0f),
+                    "The arm anchor is in front of the hand instead of back toward the elbow.");
+            }
+        }
+
+        /// <summary>
+        /// The exact mechanism <see cref="PunchDetector"/> uses to refuse to punch a creature
+        /// hanging off its own arm: the anchor has to be inside the fist's own branch of the
+        /// hierarchy. Move it anywhere else and the fist starts beating an enemy off its own
+        /// forearm every time the player waves.
+        /// </summary>
+        [Test]
+        public void Build_KeepsEachArmAnchorInsideItsOwnFistsBranch()
+        {
+            var offset = CameraOffset();
+
+            foreach (var anchorName in HordePocLayout.k_HandAnchorNames)
+            {
+                var hand = offset.Find(anchorName);
+                var fist = hand.Find(HordePocLayout.k_FistName);
+                var arm = hand.Find(HordePocLayout.k_ArmAnchorName);
+
+                Assert.That(arm.IsChildOf(fist.parent), Is.True,
+                    $"The arm anchor on '{anchorName}' is outside that fist's branch, so the fist " +
+                    "would punch whatever is holding that very arm.");
+            }
+        }
+
+        [Test]
+        public void Build_GivesEveryDummyTheComponentsItNeedsToHunt()
+        {
+            foreach (var dummy in Dummies())
+            {
+                Assert.That(dummy.GetComponent<EnemyLocomotion>(), Is.Not.Null,
+                    $"{dummy.name} cannot walk toward anyone.");
+                Assert.That(dummy.GetComponent<PointVelocityTracker>(), Is.Not.Null,
+                    $"{dummy.name} cannot report how fast it is being carried, so a punch thrown at " +
+                    "it while it holds the player would be measured against the wrong velocity.");
+            }
+        }
+
+        /// <summary>
+        /// Both ways of arriving have to be on screen from the first Play, because a wave of
+        /// identical creatures reads as a queue rather than as a swarm. There is no spawner to mix
+        /// them until Fase 3.
+        /// </summary>
+        [Test]
+        public void Build_MixesLeapersAndClingers()
+        {
+            var styles = Dummies().Select(d => d.GetComponent<EnemyLocomotion>().style).ToArray();
+
+            Assert.That(styles, Has.Some.EqualTo(LatchStyle.Leaper), "Nothing jumps at the player.");
+            Assert.That(styles, Has.Some.EqualTo(LatchStyle.Clinger), "Nothing arrives on foot.");
+        }
+
+        /// <summary>
+        /// An enemy turns kinematic twice in an ordinary life — mid-leap and while holding on — and
+        /// Unity refuses <c>ContinuousDynamic</c> on kinematic bodies, logging a warning and
+        /// downgrading it every single time.
+        /// </summary>
+        [Test]
+        public void Build_UsesACollisionModeThatSurvivesGoingKinematic()
+        {
+            foreach (var dummy in Dummies())
+            {
+                Assert.That(dummy.GetComponent<Rigidbody>().collisionDetectionMode,
+                    Is.EqualTo(CollisionDetectionMode.ContinuousSpeculative),
+                    $"{dummy.name} would spam the console every time it jumped.");
+            }
+        }
+
+        GameObject PlayerBody()
+        {
+            var body = CameraOffset().Find(HordePocLayout.k_PlayerBodyName);
+
+            Assert.That(body, Is.Not.Null,
+                $"The rig has no '{HordePocLayout.k_PlayerBodyName}'; enemies have nothing to walk toward.");
+
+            return body.gameObject;
         }
 
         Transform CameraOffset()

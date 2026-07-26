@@ -132,6 +132,88 @@ namespace HordeAttack.EditorTools
             Adopt(rig, scene);
             CenterRigOnArena(rig);
             CreateHandVisuals(rig);
+            CreatePlayerBody(rig);
+        }
+
+        /// <summary>
+        /// Builds the torso stand-in the horde walks toward and takes hold of.
+        /// </summary>
+        /// <remarks>
+        /// A VR rig is a head and two hands with nothing in between, so there is no body to grab and
+        /// nowhere for a leaper to aim. <see cref="PlayerBodyProxy"/> derives one from the headset
+        /// pose; this hangs the anchors off it and gives the player the components that make it a
+        /// target at all.
+        /// </remarks>
+        static void CreatePlayerBody(GameObject rig)
+        {
+            var origin = rig.GetComponentInChildren<XROrigin>(true);
+            var offset = FindCameraOffset(rig);
+
+            if (origin == null || offset == null || origin.Camera == null)
+            {
+                Utils.LogError(
+                    "El rig no tiene cámara o Camera Offset; la escena se genera sin cuerpo del jugador " +
+                    "y los enemigos no tendrán a quién agarrarse.");
+                return;
+            }
+
+            var body = new GameObject(HordePocLayout.k_PlayerBodyName);
+            body.transform.SetParent(offset, false);
+
+            var proxy = body.AddComponent<PlayerBodyProxy>();
+            proxy.head = origin.Camera.transform;
+
+            foreach (var layout in HordePocLayout.k_BodyAnchors)
+                CreateBodyAnchor(body.transform, layout);
+
+            CreateArmAnchors(offset);
+
+            // Added after the anchors exist: PlayerLatchTarget collects them in Awake, and
+            // LatchFeedback needs the target to subscribe to. In a built scene the order of
+            // AddComponent does not matter, but it does the moment a test builds one at runtime.
+            body.AddComponent<PlayerLatchTarget>();
+            body.AddComponent<LatchFeedback>();
+        }
+
+        static void CreateBodyAnchor(Transform body, HordePocLayout.LatchAnchorLayout layout)
+        {
+            var anchor = new GameObject(layout.name);
+            anchor.transform.SetParent(body, false);
+
+            anchor.AddComponent<LatchAnchor>().Configure(
+                layout.height, layout.heightFraction, layout.bodyOffset, layout.hangDrop);
+        }
+
+        /// <summary>
+        /// Hangs an anchor just behind each hand, so enemies can take hold of an arm.
+        /// </summary>
+        /// <remarks>
+        /// On all four hand anchors, for the same reason the fists are: XRI decides at runtime
+        /// whether the controller branch or the hand-tracking branch is live, and the builder cannot
+        /// know which. The half that is switched off is skipped at runtime rather than here —
+        /// see <see cref="PlayerLatchTarget"/>.
+        /// <para>
+        /// These are placed in the hand's own local space and are deliberately not children of the
+        /// body proxy: an arm goes where the controller goes, and a torso-relative height would put
+        /// the anchor in mid-air whenever the player raised a hand.
+        /// </para>
+        /// </remarks>
+        static void CreateArmAnchors(Transform offset)
+        {
+            foreach (var anchorName in HordePocLayout.k_HandAnchorNames)
+            {
+                var hand = offset.Find(anchorName);
+                if (hand == null)
+                    continue;
+
+                var arm = new GameObject(HordePocLayout.k_ArmAnchorName);
+                arm.transform.SetParent(hand, false);
+                arm.transform.localPosition = Vector3.back * HordePocLayout.k_ArmAnchorSetback;
+
+                // The placement fields are left at zero: nothing drives them, because this anchor is
+                // positioned by the hand it hangs from rather than by the body proxy.
+                arm.AddComponent<LatchAnchor>().Configure(LatchHeight.Low, 0f, Vector2.zero, 0f);
+            }
         }
 
         /// <summary>
@@ -240,7 +322,7 @@ namespace HordeAttack.EditorTools
 
             MakePunchTrigger(fist);
 
-            fist.AddComponent<HandVelocityTracker>();
+            fist.AddComponent<PointVelocityTracker>();
             fist.AddComponent<PunchDetector>().hand = HordePocLayout.HandSideOf(anchorName);
         }
 
@@ -291,24 +373,45 @@ namespace HordeAttack.EditorTools
                 var dummy = GameObject.CreatePrimitive(PrimitiveType.Capsule);
                 dummy.name = $"{HordePocLayout.k_DummyPrefix}{i}";
 
-                // Ring position is horizontal; height is applied separately so the facing
-                // direction stays level instead of tilting toward the ground.
-                var ringPosition = HordePocLayout.RingPosition(i, k_ReferenceDummyCount, HordePocLayout.k_DummyRingRadius);
+                // A fan in front of the player, each at its own distance. Horizontal only; height is
+                // applied separately so the facing direction stays level instead of tilting toward
+                // the ground.
+                var spawn = HordePocLayout.ApproachPosition(
+                    i, k_ReferenceDummyCount,
+                    HordePocLayout.k_SpawnNearDistance,
+                    HordePocLayout.k_SpawnFarDistance,
+                    HordePocLayout.k_SpawnArcDegrees);
 
                 dummy.transform.SetParent(root.transform, false);
-                dummy.transform.localPosition = ringPosition + Vector3.up * HordePocLayout.k_DummyCenterHeight;
+                dummy.transform.localPosition = spawn + Vector3.up * HordePocLayout.k_DummyCenterHeight;
                 dummy.transform.localScale = Vector3.one * HordePocLayout.k_DummyScale;
 
-                // Face the arena center, so it is obvious which way a dummy is oriented once
-                // they start walking toward the player in a later phase.
-                dummy.transform.localRotation = Quaternion.LookRotation(-ringPosition.normalized, Vector3.up);
+                // Facing the player from the moment the scene loads, so the first thing the player
+                // sees is a group already looking at them rather than one that turns once it starts
+                // moving.
+                dummy.transform.localRotation = Quaternion.LookRotation(-spawn.normalized, Vector3.up);
 
                 var body = dummy.AddComponent<Rigidbody>();
 
                 // A gnome, not an adult: light enough that a solid punch visibly throws it.
                 body.mass = HordePocLayout.k_DummyMass;
                 body.interpolation = RigidbodyInterpolation.Interpolate;
-                body.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+
+                // Speculative rather than ContinuousDynamic, which Unity refuses on kinematic
+                // bodies and silently downgrades with a warning every time. An enemy goes kinematic
+                // twice in an ordinary life — once mid-leap and once while holding on — so that
+                // warning would fire constantly.
+                body.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
+
+                // Before HordeEnemy, which looks both of these up in Awake. It makes no difference
+                // to a scene loaded from disk, where every Awake runs after every component exists,
+                // but it is the order a test adding components at runtime has to use.
+                dummy.AddComponent<PointVelocityTracker>();
+
+                // Alternating, so the POC always shows both ways of arriving without needing a
+                // spawner to mix them.
+                dummy.AddComponent<EnemyLocomotion>().style =
+                    i % 2 == 0 ? LatchStyle.Leaper : LatchStyle.Clinger;
 
                 dummy.AddComponent<HordeEnemy>();
             }

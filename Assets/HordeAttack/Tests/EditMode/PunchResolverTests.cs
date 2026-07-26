@@ -39,7 +39,7 @@ namespace HordeAttack.Tests
 
             Assert.That(outcome.landed, Is.False, "A slow hand brushing an enemy is not a punch.");
             Assert.That(outcome.damage, Is.Zero);
-            Assert.That(outcome.impulse, Is.EqualTo(Vector3.zero));
+            Assert.That(outcome.launchVelocity, Is.EqualTo(Vector3.zero));
             Assert.That(outcome.remainingHealth, Is.EqualTo(3), "A miss must not cost the enemy health.");
             Assert.That(outcome.isLethal, Is.False);
         }
@@ -128,10 +128,60 @@ namespace HordeAttack.Tests
             var soft = PunchResolver.Resolve(Swing(2f), 9, m_Settings);
             var hard = PunchResolver.Resolve(Swing(6f), 9, m_Settings);
 
-            Assert.That(hard.impulse.magnitude, Is.GreaterThan(soft.impulse.magnitude),
+            Assert.That(hard.knockbackDistance, Is.GreaterThan(soft.knockbackDistance),
                 "A hard punch throws the enemy no further than a soft one.");
-            Assert.That(hard.impulse.magnitude / soft.impulse.magnitude, Is.EqualTo(3f).Within(1e-2f),
-                "Knockback is meant to be proportional to hand speed.");
+            Assert.That(hard.launchVelocity.magnitude, Is.GreaterThan(soft.launchVelocity.magnitude),
+                "The extra distance is not backed by any extra speed, so nothing would actually move further.");
+        }
+
+        /// <summary>
+        /// The floor the whole knockback model exists for. The first version scaled the impulse with
+        /// hand speed, which put an ordinary punch about 30 cm back: the creature landed beside the
+        /// player and was climbing them again before the fist had come down.
+        /// </summary>
+        /// <summary>
+        /// The knockback distance agreed with the designer, stated as an absolute rather than read
+        /// back off the settings.
+        /// </summary>
+        /// <remarks>
+        /// Every other knockback test compares the model against its own tuning, so lowering the
+        /// tuning lowers the expectation with it and they all stay green — which is how a punch
+        /// worth 30 cm survived a full suite in the first place. This is the one that has an opinion
+        /// of its own: five meters is what makes hitting a creature buy the player room, and
+        /// dropping below it is a design change somebody has to make on purpose.
+        /// </remarks>
+        [Test]
+        public void Defaults_ThrowAnEnemyTheDistanceTheDesignCallsFor()
+        {
+            const float agreedMinimum = 5f;
+            var settings = new PunchSettings();
+
+            Assert.That(settings.minKnockbackDistance, Is.GreaterThanOrEqualTo(agreedMinimum),
+                $"The weakest punch that counts sends an enemy {settings.minKnockbackDistance:F1} m, " +
+                $"under the {agreedMinimum:F0} m agreed. Below that the creature lands beside the " +
+                "player and is on them again before the fist has come down.");
+
+            Assert.That(settings.maxKnockbackDistance, Is.GreaterThan(settings.minKnockbackDistance),
+                "A full power punch is worth no more distance than a glancing one.");
+        }
+
+        [Test]
+        public void Resolve_SendsEvenTheWeakestPunchTheFullMinimumDistance()
+        {
+            var weakest = PunchResolver.Resolve(Swing(m_Settings.minSpeed), 9, m_Settings);
+
+            Assert.That(weakest.knockbackDistance,
+                Is.EqualTo(m_Settings.minKnockbackDistance).Within(k_Tolerance),
+                $"The weakest punch that counts only sends the enemy {weakest.knockbackDistance:F2} m.");
+        }
+
+        [Test]
+        public void Resolve_SendsAFullPowerPunchTheFullMaximumDistance()
+        {
+            var hardest = PunchResolver.Resolve(Swing(m_Settings.maxSpeed), 9, m_Settings);
+
+            Assert.That(hardest.knockbackDistance,
+                Is.EqualTo(m_Settings.maxKnockbackDistance).Within(k_Tolerance));
         }
 
         [Test]
@@ -140,7 +190,53 @@ namespace HordeAttack.Tests
             var atCap = PunchResolver.Resolve(Swing(m_Settings.maxSpeed), 9, m_Settings);
             var wellPast = PunchResolver.Resolve(Swing(m_Settings.maxSpeed * 20f), 9, m_Settings);
 
-            Assert.That(wellPast.impulse.magnitude, Is.EqualTo(atCap.impulse.magnitude).Within(k_Tolerance));
+            Assert.That(wellPast.knockbackDistance, Is.EqualTo(atCap.knockbackDistance).Within(k_Tolerance));
+            Assert.That(wellPast.launchVelocity.magnitude, Is.EqualTo(atCap.launchVelocity.magnitude).Within(k_Tolerance));
+        }
+
+        /// <summary>
+        /// Checks the launch speed against the projectile range it is derived from, computed
+        /// independently here. Getting the trigonometry backwards yields a speed that looks
+        /// plausible and a creature that lands nowhere near where the model promised.
+        /// </summary>
+        [Test]
+        public void LaunchSpeedForRange_ActuallyCoversTheDistanceItIsGiven()
+        {
+            const float wanted = 7f;
+            float bias = m_Settings.upwardBias;
+
+            float speed = PunchResolver.LaunchSpeedForRange(wanted, bias);
+
+            float elevation = Mathf.Atan(bias);
+            float reached = speed * speed * Mathf.Sin(2f * elevation) / Physics.gravity.magnitude;
+
+            Assert.That(reached, Is.EqualTo(wanted).Within(1e-2f),
+                $"A launch at {speed:F2} m/s covers {reached:F2} m, not the {wanted:F2} m asked for.");
+        }
+
+        [Test]
+        public void LaunchSpeedForRange_NeedsMoreSpeedForMoreDistance()
+        {
+            float near = PunchResolver.LaunchSpeedForRange(5f, m_Settings.upwardBias);
+            float far = PunchResolver.LaunchSpeedForRange(10f, m_Settings.upwardBias);
+
+            Assert.That(far, Is.GreaterThan(near));
+        }
+
+        /// <summary>
+        /// A punch thrown perfectly level has no ballistic range at all, so the speed needed to
+        /// cover a set distance grows without limit. The clamped minimum elevation is what keeps
+        /// that from firing the enemy over the horizon.
+        /// </summary>
+        [Test]
+        public void LaunchSpeedForRange_StaysFiniteForALevelPunch()
+        {
+            float speed = PunchResolver.LaunchSpeedForRange(5f, 0f);
+
+            Assert.That(speed, Is.GreaterThan(0f));
+            Assert.That(float.IsFinite(speed), Is.True);
+            Assert.That(speed, Is.EqualTo(PunchResolver.LaunchSpeedForRange(5f, PunchSettings.k_MinimumUpwardBias))
+                .Within(k_Tolerance));
         }
 
         [Test]
@@ -149,7 +245,7 @@ namespace HordeAttack.Tests
             var swing = new Vector3(1f, 0f, 1f).normalized * 5f;
             var outcome = PunchResolver.Resolve(swing, 9, m_Settings);
 
-            var knockbackHeading = new Vector3(outcome.impulse.x, 0f, outcome.impulse.z).normalized;
+            var knockbackHeading = new Vector3(outcome.launchVelocity.x, 0f, outcome.launchVelocity.z).normalized;
             var swingHeading = new Vector3(swing.x, 0f, swing.z).normalized;
 
             Assert.That(Vector3.Angle(knockbackHeading, swingHeading), Is.LessThan(1f),
@@ -165,8 +261,8 @@ namespace HordeAttack.Tests
         {
             var outcome = PunchResolver.Resolve(Swing(5f), 9, m_Settings);
 
-            Assert.That(outcome.impulse.y, Is.GreaterThan(0f), "The enemy is knocked back but never up.");
-            Assert.That(outcome.impulse.y, Is.LessThan(outcome.impulse.z),
+            Assert.That(outcome.launchVelocity.y, Is.GreaterThan(0f), "The enemy is knocked back but never up.");
+            Assert.That(outcome.launchVelocity.y, Is.LessThan(outcome.launchVelocity.z),
                 "More of the punch goes upward than backward; the enemy pops up instead of away.");
         }
 
@@ -179,8 +275,8 @@ namespace HordeAttack.Tests
         {
             var outcome = PunchResolver.Resolve(new Vector3(0f, -3f, 4f), 9, m_Settings);
 
-            Assert.That(outcome.impulse.y, Is.GreaterThan(0f));
-            Assert.That(outcome.impulse.z, Is.GreaterThan(0f));
+            Assert.That(outcome.launchVelocity.y, Is.GreaterThan(0f));
+            Assert.That(outcome.launchVelocity.z, Is.GreaterThan(0f));
         }
 
         [Test]
@@ -189,9 +285,9 @@ namespace HordeAttack.Tests
             var outcome = PunchResolver.Resolve(Vector3.up * 5f, 9, m_Settings);
 
             Assert.That(outcome.landed, Is.True, "An uppercut is a punch.");
-            Assert.That(outcome.impulse.magnitude, Is.GreaterThan(0f),
+            Assert.That(outcome.launchVelocity.magnitude, Is.GreaterThan(0f),
                 "An uppercut resolved to no knockback at all.");
-            Assert.That(outcome.impulse.y, Is.GreaterThan(0f));
+            Assert.That(outcome.launchVelocity.y, Is.GreaterThan(0f));
         }
 
         [Test]
@@ -329,7 +425,9 @@ namespace HordeAttack.Tests
             Assert.That(settings.minSpeed, Is.EqualTo(untouched.minSpeed));
             Assert.That(settings.maxSpeed, Is.EqualTo(untouched.maxSpeed));
             Assert.That(settings.maxDamage, Is.EqualTo(untouched.maxDamage));
-            Assert.That(settings.impulsePerSpeed, Is.EqualTo(untouched.impulsePerSpeed));
+            Assert.That(settings.minKnockbackDistance, Is.EqualTo(untouched.minKnockbackDistance));
+            Assert.That(settings.maxKnockbackDistance, Is.EqualTo(untouched.maxKnockbackDistance));
+            Assert.That(settings.upwardBias, Is.EqualTo(untouched.upwardBias));
         }
     }
 }

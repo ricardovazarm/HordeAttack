@@ -17,8 +17,18 @@ namespace HordeAttack
         /// <summary>Health removed from the target. Zero when the punch did not land.</summary>
         public readonly int damage;
 
-        /// <summary>World-space knockback impulse, in N·s, to feed to <c>ForceMode.Impulse</c>.</summary>
-        public readonly Vector3 impulse;
+        /// <summary>
+        /// World-space velocity the target is thrown at, in m/s.
+        /// </summary>
+        /// <remarks>
+        /// A velocity rather than an impulse, so how far a punch sends a creature does not depend on
+        /// how heavy that creature is. It is what makes "the weakest punch that counts sends them
+        /// five meters" a promise the model actually keeps.
+        /// </remarks>
+        public readonly Vector3 launchVelocity;
+
+        /// <summary>How far this punch is meant to send the target, in meters.</summary>
+        public readonly float knockbackDistance;
 
         /// <summary>Controller vibration amplitude, in 0..1.</summary>
         public readonly float hapticAmplitude;
@@ -33,13 +43,14 @@ namespace HordeAttack
         public bool isLethal => landed && remainingHealth <= 0;
 
         public PunchOutcome(
-            bool landed, float power, int damage, Vector3 impulse,
+            bool landed, float power, int damage, Vector3 launchVelocity, float knockbackDistance,
             float hapticAmplitude, float hapticDuration, int remainingHealth)
         {
             this.landed = landed;
             this.power = power;
             this.damage = damage;
-            this.impulse = impulse;
+            this.launchVelocity = launchVelocity;
+            this.knockbackDistance = knockbackDistance;
             this.hapticAmplitude = hapticAmplitude;
             this.hapticDuration = hapticDuration;
             this.remainingHealth = remainingHealth;
@@ -47,7 +58,7 @@ namespace HordeAttack
 
         /// <summary>A punch that did not happen, leaving <paramref name="health"/> untouched.</summary>
         public static PunchOutcome Miss(int health) =>
-            new PunchOutcome(false, 0f, 0, Vector3.zero, 0f, 0f, Mathf.Max(0, health));
+            new PunchOutcome(false, 0f, 0, Vector3.zero, 0f, 0f, 0f, Mathf.Max(0, health));
     }
 
     /// <summary>
@@ -98,15 +109,16 @@ namespace HordeAttack
             // punch that landed but did nothing feels broken even when the swing was slow.
             int damage = Mathf.Clamp(Mathf.CeilToInt(power * settings.maxDamage), 1, settings.maxDamage);
 
-            // Clamp the speed the impulse is built from, not the impulse itself, so the same
-            // ceiling governs damage and knockback: a wild flail should not launch anyone.
-            float impulseMagnitude = Mathf.Min(speed, settings.maxSpeed) * settings.impulsePerSpeed;
-            Vector3 impulse = KnockbackDirection(handVelocity, settings.upwardBias) * impulseMagnitude;
+            // Interpolated on power, which is already clamped to 1, so the same ceiling governs
+            // damage and knockback and a wild flail cannot launch anyone into orbit.
+            float distance = Mathf.Lerp(settings.minKnockbackDistance, settings.maxKnockbackDistance, power);
+            Vector3 launchVelocity = KnockbackDirection(handVelocity, settings.upwardBias)
+                * LaunchSpeedForRange(distance, settings.upwardBias);
 
             float amplitude = Mathf.Clamp01(Mathf.Lerp(settings.minHapticAmplitude, 1f, power));
 
             return new PunchOutcome(
-                true, power, damage, impulse,
+                true, power, damage, launchVelocity, distance,
                 amplitude, settings.hapticDuration,
                 Mathf.Max(0, currentHealth - damage));
         }
@@ -127,6 +139,43 @@ namespace HordeAttack
                 return 1f;
 
             return Mathf.Clamp01((speed - settings.minSpeed) / span);
+        }
+
+        /// <summary>
+        /// How fast something has to leave the ground to land <paramref name="range"/> meters away.
+        /// </summary>
+        /// <remarks>
+        /// Plain projectile motion: at an elevation of θ, a launch at speed v lands v²·sin(2θ)/g
+        /// away, so the speed for a wanted range is √(range·g/sin(2θ)). The elevation comes from
+        /// <paramref name="upwardBias"/>, which is the vertical part of a direction whose horizontal
+        /// part is one — so the angle is its arctangent.
+        /// <para>
+        /// Reading <c>Physics.gravity</c> is the one thing here that touches Unity, and it is
+        /// deliberate: the range this returns is only right for the gravity the scene actually runs
+        /// under, so hardcoding 9.81 would quietly lie the moment anyone changed it.
+        /// </para>
+        /// <para>
+        /// The figure is a floor rather than an exact prediction. The enemy is launched from around
+        /// its own half-height rather than from the floor, and it slides and rolls after landing, so
+        /// it ends up a little further out than this. Overshooting a knockback is not a problem;
+        /// falling short is exactly the complaint this model was written to fix.
+        /// </para>
+        /// </remarks>
+        /// <param name="range">Wanted horizontal distance, in meters.</param>
+        /// <param name="upwardBias">How much of the launch direction points up. See <see cref="KnockbackDirection"/>.</param>
+        public static float LaunchSpeedForRange(float range, float upwardBias)
+        {
+            float gravity = Physics.gravity.magnitude;
+            if (gravity <= k_DirectionEpsilon)
+                return 0f;
+
+            float elevation = Mathf.Atan(Mathf.Max(PunchSettings.k_MinimumUpwardBias, upwardBias));
+            float spread = Mathf.Sin(2f * elevation);
+
+            if (spread <= k_DirectionEpsilon)
+                return 0f;
+
+            return Mathf.Sqrt(Mathf.Max(0f, range) * gravity / spread);
         }
 
         /// <summary>

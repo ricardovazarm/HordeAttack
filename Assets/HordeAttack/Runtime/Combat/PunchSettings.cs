@@ -30,8 +30,12 @@ namespace HordeAttack
 
         [Header("Knockback")]
         [SerializeField]
-        [Tooltip("Impulso de knockback por cada m/s de mano (N·s por m/s). Es, en la práctica, la masa efectiva del puño.")]
-        float m_ImpulsePerSpeed = 15f;
+        [Tooltip("Metros que sale despedido el golpe más flojo que aún cuenta. Se afina en distancia, que es lo que se ve.")]
+        float m_MinKnockbackDistance = 5f;
+
+        [SerializeField]
+        [Tooltip("Metros que sale despedido un golpe a potencia máxima.")]
+        float m_MaxKnockbackDistance = 10f;
 
         [SerializeField]
         [Tooltip("Cuánto del knockback se redirige hacia arriba, para que el enemigo despegue del suelo en vez de resbalar.")]
@@ -63,7 +67,8 @@ namespace HordeAttack
             float minSpeed = 1.5f,
             float maxSpeed = 7.5f,
             int maxDamage = 2,
-            float impulsePerSpeed = 15f,
+            float minKnockbackDistance = 5f,
+            float maxKnockbackDistance = 10f,
             float upwardBias = 0.35f,
             float minHapticAmplitude = 0.3f,
             float hapticDuration = 0.08f)
@@ -71,7 +76,8 @@ namespace HordeAttack
             m_MinSpeed = minSpeed;
             m_MaxSpeed = maxSpeed;
             m_MaxDamage = maxDamage;
-            m_ImpulsePerSpeed = impulsePerSpeed;
+            m_MinKnockbackDistance = minKnockbackDistance;
+            m_MaxKnockbackDistance = maxKnockbackDistance;
             m_UpwardBias = upwardBias;
             m_MinHapticAmplitude = minHapticAmplitude;
             m_HapticDuration = hapticDuration;
@@ -86,8 +92,19 @@ namespace HordeAttack
         /// <summary>Damage dealt by a full power punch. Every landed punch deals at least 1.</summary>
         public int maxDamage => m_MaxDamage;
 
-        /// <summary>Knockback impulse per m/s of hand speed, in N·s per m/s.</summary>
-        public float impulsePerSpeed => m_ImpulsePerSpeed;
+        /// <summary>
+        /// How far the weakest punch that still counts sends the enemy, in meters.
+        /// </summary>
+        /// <remarks>
+        /// Knockback is tuned as a distance rather than as an impulse because distance is the thing
+        /// the player can see. The first version was tuned in impulse per m/s of hand speed, which
+        /// looked reasonable on paper and put an ordinary punch about 30 cm back: the creature
+        /// landed beside the player and was on them again before they had lowered their fist.
+        /// </remarks>
+        public float minKnockbackDistance => m_MinKnockbackDistance;
+
+        /// <summary>How far a full power punch sends the enemy, in meters.</summary>
+        public float maxKnockbackDistance => m_MaxKnockbackDistance;
 
         /// <summary>Share of the knockback redirected upward.</summary>
         public float upwardBias => m_UpwardBias;
@@ -111,8 +128,13 @@ namespace HordeAttack
             m_MinSpeed = Mathf.Max(0f, m_MinSpeed);
             m_MaxSpeed = Mathf.Max(m_MinSpeed + k_MinimumSpeedSpan, m_MaxSpeed);
             m_MaxDamage = Mathf.Max(1, m_MaxDamage);
-            m_ImpulsePerSpeed = Mathf.Max(0f, m_ImpulsePerSpeed);
-            m_UpwardBias = Mathf.Max(0f, m_UpwardBias);
+            m_MinKnockbackDistance = Mathf.Max(0f, m_MinKnockbackDistance);
+            m_MaxKnockbackDistance = Mathf.Max(m_MinKnockbackDistance, m_MaxKnockbackDistance);
+
+            // Never zero. The launch angle comes from this, and a punch thrown perfectly level has
+            // no ballistic range at all — the distance model would need an infinite speed to
+            // satisfy it and the enemy would be fired into the horizon.
+            m_UpwardBias = Mathf.Max(k_MinimumUpwardBias, m_UpwardBias);
             m_MinHapticAmplitude = Mathf.Clamp01(m_MinHapticAmplitude);
             m_HapticDuration = Mathf.Max(0f, m_HapticDuration);
         }
@@ -122,5 +144,15 @@ namespace HordeAttack
         /// power ramp never collapses to a single speed.
         /// </summary>
         public const float k_MinimumSpeedSpan = 0.1f;
+
+        /// <summary>
+        /// Shallowest launch angle allowed, expressed as <see cref="upwardBias"/>.
+        /// </summary>
+        /// <remarks>
+        /// Roughly three degrees above level. Anything flatter makes the speed needed to cover the
+        /// knockback distance climb without limit, because a projectile launched level never
+        /// travels a set distance — it just falls.
+        /// </remarks>
+        public const float k_MinimumUpwardBias = 0.05f;
     }
 }

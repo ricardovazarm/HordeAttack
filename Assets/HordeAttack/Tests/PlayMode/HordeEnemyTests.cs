@@ -61,6 +61,46 @@ namespace HordeAttack.Tests
             return go.AddComponent<HordeEnemy>();
         }
 
+        /// <summary>
+        /// Builds an enemy that falls, at the size and mass the real ones have.
+        /// </summary>
+        /// <remarks>
+        /// The rest of this fixture switches gravity off so that knockback assertions measure the
+        /// punch and nothing else. The distance tests need the opposite: knockback distance is a
+        /// ballistic figure, so it only means anything with gravity pulling the creature back down.
+        /// </remarks>
+        HordeEnemy CreateFallingEnemy(float x = 0f)
+        {
+            var go = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+            go.SetActive(false);
+            go.name = "Test Falling Enemy";
+            go.transform.position = new Vector3(x, HordePocLayout.k_DummyCenterHeight, 0f);
+            go.transform.localScale = Vector3.one * HordePocLayout.k_DummyScale;
+            m_Created.Add(go);
+
+            var body = go.AddComponent<Rigidbody>();
+            body.mass = HordePocLayout.k_DummyMass;
+            body.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
+
+            var enemy = go.AddComponent<HordeEnemy>();
+            go.SetActive(true);
+
+            return enemy;
+        }
+
+        /// <summary>A floor wide enough that a hard punch cannot throw anything off the edge.</summary>
+        void CreateGround()
+        {
+            var ground = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            ground.name = "Test Ground";
+            ground.transform.localScale = new Vector3(80f, 0.2f, 80f);
+            ground.transform.position = new Vector3(0f, -0.1f, 0f);
+            m_Created.Add(ground);
+        }
+
+        static float HorizontalTravel(Vector3 from, Vector3 to) =>
+            Vector2.Distance(new Vector2(from.x, from.z), new Vector2(to.x, to.z));
+
         static Vector3 Swing(float speed) => Vector3.forward * speed;
 
         /// <summary>
@@ -153,28 +193,99 @@ namespace HordeAttack.Tests
             Assert.That(velocity.z, Is.GreaterThan(0f), "The enemy was not thrown away from the punch.");
             Assert.That(velocity.y, Is.GreaterThan(0f), "The enemy slid along the floor instead of flying.");
 
-            // Impulse over mass is the velocity change the punch asked for.
-            Assert.That(velocity.magnitude, Is.EqualTo(outcome.impulse.magnitude / body.mass).Within(0.1f),
-                "The knockback the enemy received does not match the impulse the punch resolved.");
+            // Knockback is applied as a velocity, so what the enemy ends up doing is exactly what
+            // the punch model asked for, whatever the creature weighs.
+            Assert.That(velocity.magnitude, Is.EqualTo(outcome.launchVelocity.magnitude).Within(0.1f),
+                "The knockback the enemy received does not match the launch the punch resolved.");
+        }
+
+        /// <summary>
+        /// The knockback model measured the way the player experiences it: with gravity, a floor,
+        /// and a creature that lands and slides. Everything else in this fixture checks the launch;
+        /// this checks where the creature actually ends up.
+        /// </summary>
+        /// <remarks>
+        /// The first version of the model scaled an impulse with hand speed. It looked reasonable
+        /// written down and moved an ordinary punch about 30 cm — the creature landed beside the
+        /// player and was climbing back on before the fist had come down. Nothing caught it, because
+        /// every test asserted on the impulse rather than on where anyone ended up.
+        /// </remarks>
+        [UnityTest]
+        public IEnumerator ReceivePunch_ThrowsTheEnemyMetersAwayNotCentimetres()
+        {
+            CreateGround();
+            var enemy = CreateFallingEnemy();
+            var settings = new PunchSettings();
+            yield return null;
+
+            var start = enemy.transform.position;
+
+            // The weakest swing that still counts as a punch, so this measures the floor of the
+            // model rather than a best case.
+            var outcome = enemy.ReceivePunch(Swing(settings.minSpeed), settings);
+            Assume.That(outcome.landed, Is.True);
+
+            yield return new WaitForSeconds(2.5f);
+
+            float travelled = HorizontalTravel(start, enemy.transform.position);
+
+            Assert.That(travelled, Is.GreaterThanOrEqualTo(settings.minKnockbackDistance),
+                $"The weakest punch that counts moved the enemy {travelled:F2} m, short of the " +
+                $"{settings.minKnockbackDistance:F1} m the model promises. It lands next to the " +
+                "player and walks straight back in.");
         }
 
         [UnityTest]
+        public IEnumerator ReceivePunch_ThrowsAHardPunchFurtherAcrossTheFloor()
+        {
+            CreateGround();
+            var enemy = CreateFallingEnemy();
+            var settings = new PunchSettings();
+            yield return null;
+
+            var start = enemy.transform.position;
+            enemy.ReceivePunch(Swing(settings.maxSpeed), settings);
+
+            yield return new WaitForSeconds(2.5f);
+
+            float travelled = HorizontalTravel(start, enemy.transform.position);
+
+            Assert.That(travelled, Is.GreaterThanOrEqualTo(settings.maxKnockbackDistance),
+                $"A full power punch moved the enemy {travelled:F2} m, short of the " +
+                $"{settings.maxKnockbackDistance:F1} m the model promises.");
+        }
+
+        /// <summary>
+        /// Compared in meters travelled rather than in launch speed. Under a distance-based model
+        /// the speed only grows with the square root of the range, so two punches that land a
+        /// creature twice as far apart differ by about 40% in speed — a comparison on speed reads
+        /// as "barely harder" while the thing the player watches has doubled.
+        /// </summary>
+        [UnityTest]
         public IEnumerator ReceivePunch_ThrowsAHardPunchFurtherThanASoftOne()
         {
-            var softly = CreateEnemy(Vector3.zero);
-            var hard = CreateEnemy(new Vector3(5f, 0f, 0f));
+            CreateGround();
+
+            // Far apart, so neither creature lands on the other and skews the measurement.
+            var softly = CreateFallingEnemy();
+            var hard = CreateFallingEnemy(30f);
             var settings = new PunchSettings();
+            yield return null;
+
+            var softStart = softly.transform.position;
+            var hardStart = hard.transform.position;
 
             softly.ReceivePunch(Swing(2f), settings);
             hard.ReceivePunch(Swing(7f), settings);
-            yield return SimulatePhysics();
 
-            float softSpeed = softly.GetComponent<Rigidbody>().linearVelocity.magnitude;
-            float hardSpeed = hard.GetComponent<Rigidbody>().linearVelocity.magnitude;
+            yield return new WaitForSeconds(2.5f);
 
-            Assert.That(hardSpeed, Is.GreaterThan(softSpeed * 2f),
-                $"A 7 m/s punch ({hardSpeed:F2} m/s of knockback) is barely harder than a 2 m/s one " +
-                $"({softSpeed:F2} m/s).");
+            float softTravel = HorizontalTravel(softStart, softly.transform.position);
+            float hardTravel = HorizontalTravel(hardStart, hard.transform.position);
+
+            Assert.That(hardTravel - softTravel, Is.GreaterThanOrEqualTo(3f),
+                $"A 7 m/s punch sent the enemy {hardTravel:F2} m and a 2 m/s one {softTravel:F2} m. " +
+                "Hitting harder has to be worth meters, or there is no reason to swing hard.");
         }
 
         [UnityTest]

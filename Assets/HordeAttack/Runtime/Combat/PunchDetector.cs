@@ -9,7 +9,7 @@ namespace HordeAttack
     /// one lands.
     /// </summary>
     /// <remarks>
-    /// Lives on the fist, alongside the <see cref="HandVelocityTracker"/> that measures the swing
+    /// Lives on the fist, alongside the <see cref="PointVelocityTracker"/> that measures the swing
     /// and the trigger collider that notices the contact.
     /// <para>
     /// The punch is resolved and its feedback played entirely on the machine that threw it, without
@@ -18,7 +18,7 @@ namespace HordeAttack
     /// like a punch. It is the same trade the template makes in Whack-A-Pig.
     /// </para>
     /// </remarks>
-    [RequireComponent(typeof(HandVelocityTracker))]
+    [RequireComponent(typeof(PointVelocityTracker))]
     public class PunchDetector : MonoBehaviour
     {
         /// <summary>
@@ -48,7 +48,8 @@ namespace HordeAttack
 
         readonly Dictionary<HordeEnemy, float> m_LastHitTime = new Dictionary<HordeEnemy, float>();
 
-        HandVelocityTracker m_Tracker;
+        PointVelocityTracker m_Tracker;
+        Transform m_HandRoot;
 
         /// <summary>Which hand this fist belongs to.</summary>
         public HandSide hand
@@ -66,7 +67,12 @@ namespace HordeAttack
         /// <inheritdoc/>
         void Awake()
         {
-            m_Tracker = GetComponent<HandVelocityTracker>();
+            m_Tracker = GetComponent<PointVelocityTracker>();
+
+            // The transform the fist hangs off — a controller or a tracked hand. Anything latched
+            // below it is on this arm, which is what makes it unpunchable by this fist.
+            m_HandRoot = transform.parent;
+
             m_Settings?.Clamp();
         }
 
@@ -109,10 +115,10 @@ namespace HordeAttack
             // The collider that touched us is the enemy's body, but by Fase 3 an enemy is a
             // hierarchy with several of them, so resolve upward to the enemy itself.
             var enemy = other.GetComponentInParent<HordeEnemy>();
-            if (enemy == null || !enemy.isAlive || !IsOffCooldown(enemy))
+            if (enemy == null || !enemy.isAlive || IsOnThisArm(enemy) || !IsOffCooldown(enemy))
                 return;
 
-            var outcome = enemy.ReceivePunch(m_Tracker.velocity, m_Settings);
+            var outcome = enemy.ReceivePunch(SwingAgainst(enemy), m_Settings);
 
             // A miss is a graze, not a punch: it must not start a cooldown, or a slow brush against
             // an enemy would lock out the real punch that follows it a tenth of a second later.
@@ -121,6 +127,45 @@ namespace HordeAttack
 
             RecordHit(enemy);
             PlayHaptics(outcome);
+        }
+
+        /// <summary>
+        /// How fast this fist is closing on <paramref name="enemy"/>, in m/s.
+        /// </summary>
+        /// <remarks>
+        /// For a free enemy this is just how fast the hand is moving, which is the whole punch model
+        /// from Fase 1. For one that is riding on a player it is the hand's velocity minus the
+        /// enemy's, and it has to be: an enemy clinging to your waist travels with you, so walking
+        /// across the room at 1.5 m/s would otherwise register as a punch on every physics step
+        /// without the player having thrown anything.
+        /// <para>
+        /// The subtraction is deliberately limited to latched enemies. Applied to free ones, a
+        /// creature sprinting into a motionless fist would be credited to the player as a punch it
+        /// never threw — see <see cref="HordeEnemy.carrierVelocity"/>.
+        /// </para>
+        /// </remarks>
+        Vector3 SwingAgainst(HordeEnemy enemy) => m_Tracker.velocity - enemy.carrierVelocity;
+
+        /// <summary>
+        /// Whether <paramref name="enemy"/> is hanging off this very arm.
+        /// </summary>
+        /// <remarks>
+        /// The punch trigger sits on the hand and an arm anchor sits just behind it, so a creature
+        /// latched there is permanently inside this fist's trigger. Without this check every
+        /// movement of that arm would resolve a punch on it, and the enemy would be beaten off by
+        /// the arm it is holding rather than by the player's other hand.
+        /// <para>
+        /// The cooldown does not cover this. It would space the phantom punches out, not stop them.
+        /// Nor does the relative-velocity subtraction, which only mostly cancels: the anchor sits at
+        /// an offset from the fist, so rolling the wrist swings the two apart fast enough to clear
+        /// the punch threshold.
+        /// </para>
+        /// </remarks>
+        bool IsOnThisArm(HordeEnemy enemy)
+        {
+            var anchor = enemy.latchAnchor;
+
+            return anchor != null && m_HandRoot != null && anchor.transform.IsChildOf(m_HandRoot);
         }
 
         bool IsOffCooldown(HordeEnemy enemy)

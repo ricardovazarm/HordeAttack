@@ -20,6 +20,8 @@ namespace HordeAttack
         public const string k_DummyRootName = "Dummies";
         public const string k_DummyPrefix = "Dummy_";
         public const string k_FistName = "Fist";
+        public const string k_PlayerBodyName = "Player Body";
+        public const string k_ArmAnchorName = "Arm Anchor";
 
         /// <summary>
         /// Children of the rig's camera offset that track a hand, in the order the builder
@@ -87,11 +89,124 @@ namespace HordeAttack
                 $"'{anchorName}' does not name a left or right hand anchor.", nameof(anchorName));
         }
 
-        /// <summary>Half-extent of the square ground plate, in meters.</summary>
-        public const float k_ArenaRadius = 10f;
+        /// <summary>
+        /// Where on the player's body an enemy can take hold, and how it hangs once it does.
+        /// </summary>
+        /// <remarks>
+        /// Heights are fractions of the player's real eye height rather than meters, because
+        /// anchors authored for a tall player end up at a short one's chin, where the head clearance
+        /// guard refuses them and leapers quietly stop being able to land on anyone. See
+        /// <see cref="PlayerBodyProxy"/>, which does the placing.
+        /// </remarks>
+        public readonly struct LatchAnchorLayout
+        {
+            /// <summary>Name of the anchor object in the hierarchy.</summary>
+            public readonly string name;
 
-        /// <summary>Distance from the arena center at which reference dummies are placed.</summary>
-        public const float k_DummyRingRadius = 3f;
+            /// <summary>Band of the body this anchor belongs to.</summary>
+            public readonly LatchHeight height;
+
+            /// <summary>Height as a fraction of the player's eye height.</summary>
+            public readonly float heightFraction;
+
+            /// <summary>Sideways (x) and forward (y) offset from the body axis, in meters.</summary>
+            public readonly Vector2 bodyOffset;
+
+            /// <summary>How far below the anchor a latched enemy's center sits, in meters.</summary>
+            public readonly float hangDrop;
+
+            public LatchAnchorLayout(
+                string name, LatchHeight height, float heightFraction, Vector2 bodyOffset, float hangDrop)
+            {
+                this.name = name;
+                this.height = height;
+                this.heightFraction = heightFraction;
+                this.bodyOffset = bodyOffset;
+                this.hangDrop = hangDrop;
+            }
+        }
+
+        /// <summary>
+        /// The anchors that hang off the player's torso.
+        /// </summary>
+        /// <remarks>
+        /// Two high and four low, which matches how the horde arrives: leapers aim for the chest,
+        /// everyone else takes a leg or a hip. The arms are not here — they hang off the hand
+        /// transforms instead, because an arm follows the controller and not the torso.
+        /// <para>
+        /// Nothing on the head, and nothing high enough for the clearance guard to have to catch. A
+        /// creature hanging in front of the visor does not read as frightening, it reads as a bug.
+        /// </para>
+        /// <para>
+        /// At 1 m tall on a human torso, latched enemies overlap each other. That is left alone on
+        /// purpose: a pile is the intended read, and spacing six anchors far enough apart to avoid
+        /// it would mean putting them somewhere a person does not have a body.
+        /// </para>
+        /// </remarks>
+        public static readonly LatchAnchorLayout[] k_BodyAnchors =
+        {
+            new LatchAnchorLayout("Chest Left", LatchHeight.High, 0.74f, new Vector2(-0.2f, 0.1f), 0.25f),
+            new LatchAnchorLayout("Chest Right", LatchHeight.High, 0.74f, new Vector2(0.2f, 0.1f), 0.25f),
+            new LatchAnchorLayout("Waist Left", LatchHeight.Low, 0.5f, new Vector2(-0.26f, -0.14f), 0f),
+            new LatchAnchorLayout("Waist Right", LatchHeight.Low, 0.5f, new Vector2(0.26f, -0.14f), 0f),
+            new LatchAnchorLayout("Leg Left", LatchHeight.Low, 0.34f, new Vector2(-0.14f, 0f), 0f),
+            new LatchAnchorLayout("Leg Right", LatchHeight.Low, 0.34f, new Vector2(0.14f, 0f), 0f),
+        };
+
+        /// <summary>
+        /// Shortest eye height the anchor placement is expected to hold up at, in meters.
+        /// </summary>
+        /// <remarks>
+        /// The two things it has to hold up against pull in opposite directions: the chest anchors
+        /// have to stay outside the head clearance, which wants them low, and a latched enemy has to
+        /// keep its feet out of the floor, which wants them high. Both are satisfied from here up.
+        /// Below it — a crouching player — the chest anchors start being refused and leapers land on
+        /// legs instead, which is the intended way for this to degrade.
+        /// </remarks>
+        public const float k_ReferenceEyeHeight = 1.5f;
+
+        /// <summary>
+        /// How far behind the hand the arm anchor sits, in meters.
+        /// </summary>
+        /// <remarks>
+        /// Roughly the wrist. Far enough back that a creature holding on there is visibly on the
+        /// forearm rather than in the fist, and close enough that it stays inside the reach of the
+        /// other hand.
+        /// </remarks>
+        public const float k_ArmAnchorSetback = 0.12f;
+
+        /// <summary>
+        /// Half-extent of the square ground plate, in meters.
+        /// </summary>
+        /// <remarks>
+        /// Sized from where enemies start rather than the other way round: they spawn up to
+        /// <see cref="k_SpawnFarDistance"/> away and have to be standing on something, with room to
+        /// spare for the ones that get punched past their own spawn point.
+        /// </remarks>
+        public const float k_ArenaRadius = 15f;
+
+        /// <summary>Closest an enemy starts to the player, in meters.</summary>
+        /// <remarks>
+        /// Tuned as an arrival time, not as a distance: at the walking speed enemies actually use
+        /// this puts the first creature on the player at around four seconds. Long enough to look
+        /// around and watch the horde come — at 3 m the first one was holding on before the player
+        /// had finished settling into the headset — and short enough that the game does not open
+        /// with a wait.
+        /// </remarks>
+        public const float k_SpawnNearDistance = 7f;
+
+        /// <summary>Furthest an enemy starts from the player, in meters.</summary>
+        public const float k_SpawnFarDistance = 8.5f;
+
+        /// <summary>
+        /// Width of the fan enemies start in, in degrees, centered on the direction the player faces.
+        /// </summary>
+        /// <remarks>
+        /// In front rather than all around, so the opening read is "they are coming for me" and not
+        /// "something grabbed me from behind before I knew the game had started". Surrounding the
+        /// player is Fase 3's business, once waves exist and the player has learned to turn.
+        /// </remarks>
+        public const float k_SpawnArcDegrees = 70f;
 
         /// <summary>
         /// Total height of an enemy, in meters. They are gnome sized: roughly waist high on a
@@ -122,10 +237,71 @@ namespace HordeAttack
         public const float k_DummyMass = 20f;
 
         /// <summary>
+        /// Golden ratio conjugate, the step of the sequence that scatters spawn distances.
+        /// </summary>
+        /// <remarks>
+        /// Stepping through the unit interval by this and wrapping produces values that never
+        /// repeat and never clump, which is what a random number generator is usually reached for.
+        /// It is used instead of one because the scene has to build the same way every time: a
+        /// randomised layout means a bug that only shows up on some runs.
+        /// </remarks>
+        const float k_GoldenRatioConjugate = 0.6180339887f;
+
+        /// <summary>
+        /// Places <paramref name="count"/> enemies in a fan in front of the player, each at a
+        /// different distance.
+        /// </summary>
+        /// <remarks>
+        /// Two things are deliberate. The fan spreads evenly across the arc, so the horde spans the
+        /// player's view rather than arriving down a single line. The distances do not: they come
+        /// from a golden-ratio sequence, so no two enemies are the same distance away and the group
+        /// does not read as a formation marching in step. Evenly spaced distances would have them
+        /// arrive in a neat, predictable order.
+        /// <para>
+        /// Returned relative to the arena center, at ground level. Height is the caller's business.
+        /// </para>
+        /// </remarks>
+        /// <param name="index">Which enemy. Values outside [0, count) wrap, so a spawn counter works directly.</param>
+        /// <param name="count">How many enemies the fan holds. Must be positive.</param>
+        /// <param name="nearDistance">Distance of the closest possible spawn, in meters.</param>
+        /// <param name="farDistance">Distance of the furthest possible spawn. Must not be nearer than <paramref name="nearDistance"/>.</param>
+        /// <param name="arcDegrees">Total width of the fan, centered on +Z.</param>
+        public static Vector3 ApproachPosition(
+            int index, int count, float nearDistance, float farDistance, float arcDegrees)
+        {
+            if (count <= 0)
+                throw new System.ArgumentOutOfRangeException(nameof(count), count, "A fan must hold at least one enemy.");
+            if (nearDistance < 0f)
+                throw new System.ArgumentOutOfRangeException(nameof(nearDistance), nearDistance, "Spawn distance cannot be negative.");
+            if (farDistance < nearDistance)
+                throw new System.ArgumentOutOfRangeException(nameof(farDistance), farDistance, "The far spawn distance is nearer than the near one.");
+
+            int wrapped = XRMultiplayer.Utils.RealMod(index, count);
+
+            // A single enemy goes straight ahead; any more spread symmetrically about the centre.
+            float acrossArc = count > 1 ? (float)wrapped / (count - 1) - 0.5f : 0f;
+            float angle = acrossArc * arcDegrees * Mathf.Deg2Rad;
+
+            // The half-step offset stops index 0 from always landing exactly on the near distance,
+            // which would make the closest enemy the same one every time.
+            float alongDepth = Fraction((wrapped + 0.5f) * k_GoldenRatioConjugate);
+            float distance = Mathf.Lerp(nearDistance, farDistance, alongDepth);
+
+            return new Vector3(Mathf.Sin(angle) * distance, 0f, Mathf.Cos(angle) * distance);
+        }
+
+        static float Fraction(float value) => value - Mathf.Floor(value);
+
+        /// <summary>
         /// Distributes <paramref name="count"/> positions evenly around a horizontal ring
         /// centered on the origin, with index 0 placed on +Z and increasing indices
         /// advancing clockwise when viewed from above.
         /// </summary>
+        /// <remarks>
+        /// Nothing calls this yet — the POC starts its enemies in a fan in front of the player, see
+        /// <see cref="ApproachPosition"/>. It is kept for Fase 3, whose later waves are meant to
+        /// come at the player from every side.
+        /// </remarks>
         /// <param name="index">
         /// Position to compute. Values outside [0, count) wrap around, so callers can
         /// feed a monotonically increasing spawn counter directly.

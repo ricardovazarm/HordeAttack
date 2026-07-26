@@ -17,7 +17,7 @@ namespace HordeAttack
     /// at 72 Hz on a standalone headset and at whatever rate the editor runs over Link.
     /// </para>
     /// This is plain C# with no Unity lifecycle so it can be exercised directly in EditMode tests;
-    /// <see cref="HandVelocityTracker"/> is the thin component that feeds it.
+    /// <see cref="PointVelocityTracker"/> is the thin component that feeds it.
     /// </remarks>
     public class VelocityWindow
     {
