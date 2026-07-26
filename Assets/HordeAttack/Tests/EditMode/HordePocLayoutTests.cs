@@ -110,6 +110,65 @@ namespace HordeAttack.Tests
             Assert.Throws<ArgumentOutOfRangeException>(() => HordePocLayout.RingPosition(0, 4, -1f));
         }
 
+        [Test]
+        public void HandSideOf_ClassifiesEveryAnchorTheBuilderUses()
+        {
+            foreach (var anchorName in HordePocLayout.k_HandAnchorNames)
+            {
+                var expected = anchorName.StartsWith("Left") ? HandSide.Left : HandSide.Right;
+
+                Assert.That(HordePocLayout.HandSideOf(anchorName), Is.EqualTo(expected),
+                    $"'{anchorName}' was classified as the wrong hand.");
+            }
+        }
+
+        /// <summary>
+        /// Both hand-tracking and controller anchors exist for each side, and the fist hangs off all
+        /// four because which pair is live is only known at runtime. Pinning that both spellings of
+        /// a side agree is what stops one branch from buzzing the wrong controller.
+        /// </summary>
+        [Test]
+        public void HandSideOf_AgreesAcrossTheControllerAndHandTrackingAnchors()
+        {
+            Assert.That(HordePocLayout.HandSideOf("Left Controller"),
+                Is.EqualTo(HordePocLayout.HandSideOf("Left Hand")));
+            Assert.That(HordePocLayout.HandSideOf("Right Controller"),
+                Is.EqualTo(HordePocLayout.HandSideOf("Right Hand")));
+            Assert.That(HordePocLayout.HandSideOf("Left Controller"),
+                Is.Not.EqualTo(HordePocLayout.HandSideOf("Right Controller")));
+        }
+
+        [Test]
+        public void HandSideOf_RejectsAnythingThatIsNotAHand()
+        {
+            Assert.Throws<ArgumentException>(() => HordePocLayout.HandSideOf("Camera Offset"));
+            Assert.Throws<ArgumentException>(() => HordePocLayout.HandSideOf(""));
+            Assert.Throws<ArgumentException>(() => HordePocLayout.HandSideOf(null));
+        }
+
+        /// <summary>
+        /// The punch trigger is tuned in world meters but stored in the fist's local space, which is
+        /// scaled to hand size. Getting the conversion backwards yields a trigger either far too
+        /// small to ever connect or wide enough to punch across the room.
+        /// </summary>
+        [Test]
+        public void PunchTriggerLocalRadius_ScalesBackToTheAuthoredWorldRadius()
+        {
+            float worldRadius = HordePocLayout.k_PunchTriggerLocalRadius * HordePocLayout.k_FistDiameter;
+
+            Assert.That(worldRadius, Is.EqualTo(HordePocLayout.k_PunchTriggerRadius).Within(k_Tolerance));
+        }
+
+        [Test]
+        public void PunchTriggerRadius_ReachesBeyondTheVisibleFist()
+        {
+            float fistRadius = HordePocLayout.k_FistDiameter * 0.5f;
+
+            Assert.That(HordePocLayout.k_PunchTriggerRadius, Is.GreaterThan(fistRadius),
+                "The trigger is inside the fist mesh, so a punch only registers after it visibly " +
+                "clipped through the enemy.");
+        }
+
         /// <summary>Compares vectors with a tolerance, since ring math goes through trig.</summary>
         class Vector3EqualityComparer : System.Collections.Generic.IEqualityComparer<Vector3>
         {

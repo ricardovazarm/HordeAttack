@@ -29,6 +29,7 @@ namespace HordeAttack.EditorTools
         /// <summary>Number of stationary reference dummies placed around the player.</summary>
         public const int k_ReferenceDummyCount = 3;
 
+
         public const string k_MaterialDirectory = "Assets/HordeAttack/Materials";
 
         /// <summary>Material used for the fist markers, created on first use.</summary>
@@ -187,7 +188,7 @@ namespace HordeAttack.EditorTools
                     continue;
                 }
 
-                CreateFist(anchor, material);
+                CreateFist(anchor, material, anchorName);
             }
         }
 
@@ -221,7 +222,11 @@ namespace HordeAttack.EditorTools
             return material;
         }
 
-        static void CreateFist(Transform anchor, Material material)
+        /// <summary>
+        /// Builds one fist: the visible sphere, the trigger that notices enemies, and the
+        /// components that measure the swing and resolve the punch.
+        /// </summary>
+        static void CreateFist(Transform anchor, Material material, string anchorName)
         {
             var fist = GameObject.CreatePrimitive(PrimitiveType.Sphere);
             fist.name = HordePocLayout.k_FistName;
@@ -230,12 +235,34 @@ namespace HordeAttack.EditorTools
             fist.transform.localPosition = Vector3.zero;
             fist.transform.localScale = Vector3.one * HordePocLayout.k_FistDiameter;
 
-            // The primitive's collider would shove the dummies around on contact. Punching is
-            // Fase 1 and gets a trigger sized to the swing; until then the fist is purely visual.
-            Object.DestroyImmediate(fist.GetComponent<Collider>());
-
             if (material != null)
                 fist.GetComponent<MeshRenderer>().sharedMaterial = material;
+
+            MakePunchTrigger(fist);
+
+            fist.AddComponent<HandVelocityTracker>();
+            fist.AddComponent<PunchDetector>().hand = HordePocLayout.HandSideOf(anchorName);
+        }
+
+        /// <summary>
+        /// Turns the fist's primitive collider into the volume that registers punches.
+        /// </summary>
+        /// <remarks>
+        /// A trigger, not a solid collider: a solid fist would shove enemies around with raw physics
+        /// on every graze, and knockback is supposed to come from the punch model, not from the
+        /// collision. The kinematic Rigidbody is what makes the trigger fire reliably — without one
+        /// Unity treats a moving collider as a displaced static body, which is both expensive and
+        /// unreliable for contact events.
+        /// </remarks>
+        static void MakePunchTrigger(GameObject fist)
+        {
+            var trigger = fist.GetComponent<SphereCollider>();
+            trigger.isTrigger = true;
+            trigger.radius = HordePocLayout.k_PunchTriggerLocalRadius;
+
+            var body = fist.AddComponent<Rigidbody>();
+            body.isKinematic = true;
+            body.useGravity = false;
         }
 
         /// <summary>
@@ -279,10 +306,11 @@ namespace HordeAttack.EditorTools
                 var body = dummy.AddComponent<Rigidbody>();
 
                 // A gnome, not an adult: light enough that a solid punch visibly throws it.
-                // The real knockback curve gets tuned in Fase 1.
-                body.mass = 20f;
+                body.mass = HordePocLayout.k_DummyMass;
                 body.interpolation = RigidbodyInterpolation.Interpolate;
                 body.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+
+                dummy.AddComponent<HordeEnemy>();
             }
         }
 

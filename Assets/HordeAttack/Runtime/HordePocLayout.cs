@@ -42,6 +42,51 @@ namespace HordeAttack
         /// <summary>Diameter of the fist marker, roughly a closed adult hand, in meters.</summary>
         public const float k_FistDiameter = 0.11f;
 
+        /// <summary>
+        /// World-space radius of the trigger that registers punches, in meters.
+        /// </summary>
+        /// <remarks>
+        /// Deliberately wider than the fist itself. VR hands meet no resistance, so by the time the
+        /// visible fist is inside an enemy the player has already swung past it; a slightly generous
+        /// trigger registers the hit at the moment it looks like contact rather than after it.
+        /// </remarks>
+        public const float k_PunchTriggerRadius = 0.09f;
+
+        /// <summary>
+        /// Radius the punch trigger needs in the fist's local space to end up
+        /// <see cref="k_PunchTriggerRadius"/> across in the world.
+        /// </summary>
+        /// <remarks>
+        /// The fist is scaled uniformly by <see cref="k_FistDiameter"/>, and a
+        /// <see cref="UnityEngine.SphereCollider"/>'s radius is in local units, so the world radius
+        /// has to be divided back out. Authoring the world figure and converting keeps the tuning
+        /// value in the unit a designer thinks in.
+        /// </remarks>
+        public const float k_PunchTriggerLocalRadius = k_PunchTriggerRadius / k_FistDiameter;
+
+        /// <summary>
+        /// Returns which hand <paramref name="anchorName"/> belongs to.
+        /// </summary>
+        /// <remarks>
+        /// Handedness has to be baked in when the scene is built because haptics are addressed by
+        /// hand, not by transform: <c>HapticsUtility</c> takes a left/right selector, so the fist
+        /// has to know which controller to buzz.
+        /// </remarks>
+        /// <param name="anchorName">One of <see cref="k_HandAnchorNames"/>.</param>
+        public static HandSide HandSideOf(string anchorName)
+        {
+            if (string.IsNullOrEmpty(anchorName))
+                throw new System.ArgumentException("Hand anchor name is empty.", nameof(anchorName));
+
+            if (anchorName.StartsWith("Left", System.StringComparison.OrdinalIgnoreCase))
+                return HandSide.Left;
+            if (anchorName.StartsWith("Right", System.StringComparison.OrdinalIgnoreCase))
+                return HandSide.Right;
+
+            throw new System.ArgumentException(
+                $"'{anchorName}' does not name a left or right hand anchor.", nameof(anchorName));
+        }
+
         /// <summary>Half-extent of the square ground plate, in meters.</summary>
         public const float k_ArenaRadius = 10f;
 
@@ -65,6 +110,16 @@ namespace HordeAttack
 
         /// <summary>Height of a dummy's center above the ground, in meters.</summary>
         public const float k_DummyCenterHeight = k_DummyHeight / 2f;
+
+        /// <summary>
+        /// Mass of an enemy, in kilograms.
+        /// </summary>
+        /// <remarks>
+        /// Light for something a meter tall, on purpose: with the default punch model an ordinary
+        /// swing delivers around 45 N·s, which at this mass is a couple of meters per second of
+        /// knockback — enough that the player can watch the hit land.
+        /// </remarks>
+        public const float k_DummyMass = 20f;
 
         /// <summary>
         /// Distributes <paramref name="count"/> positions evenly around a horizontal ring

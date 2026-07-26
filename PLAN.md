@@ -100,21 +100,74 @@ Ojo con diagnosticar morado en el visor: puede ser esto o el shader de error, y 
 
 ## FASE 1 — Puñetazo local: daño, knockback y haptics
 
-**Estado:** ⬜ Pendiente
+**Estado:** ✅ Completada — verificada en el visor el 2026-07-25
 
-Todavía sin red y sin IA. Un dummy quieto que recibe golpes.
+Todavía sin red y sin IA. Tres dummies quietos que reciben golpes.
 
-- `HandVelocityTracker`: velocidad suavizada de cada mano (ventana móvil, no delta de un frame, que es ruidoso).
-- `PunchDetector`: collider de mano + umbral de velocidad → evento de golpe con dirección y magnitud.
-- `PunchResolver` (**lógica pura, sin MonoBehaviour**): dada velocidad, umbral y vida actual → daño e impulso. Aislada así justamente para poder testearla de verdad.
-- `HordeEnemy` v1: 3 de vida, recibe golpe, sale despedido con impulso proporcional, muere al tercero.
-- Haptics vía `SendHapticImpulse` en la mano que conecta, con intensidad escalada por la fuerza.
+Todo lo nuevo vive en `Assets/HordeAttack/Runtime/Combat/`:
 
-**Salida verificable:**
-1. Play con el visor. Golpeas el dummy: vibra el mando, el dummy sale volando hacia atrás.
-2. Golpe suave = sale poco. Golpe fuerte = sale mucho y más lejos.
-3. Al tercer golpe el dummy muere.
-4. Tests EditMode de `PunchResolver` pasan: umbral (golpe lento no daña), escalado de impulso, y que la vida llega a 0 exactamente al tercer golpe estándar.
+| Archivo | Qué es |
+|---|---|
+| `VelocityWindow.cs` | Lógica pura. Ventana deslizante que estima la velocidad de un punto. |
+| `PunchSettings.cs` | Datos serializables del modelo de golpe (umbral, daño, knockback, haptics). |
+| `PunchResolver.cs` | Lógica pura. Velocidad de mano + vida actual → `PunchOutcome` (daño, impulso, vibración). |
+| `HandSide.cs` | Enum izquierda/derecha. |
+| `HandVelocityTracker.cs` | MonoBehaviour delgado que alimenta el `VelocityWindow` desde `LateUpdate`. |
+| `PunchDetector.cs` | MonoBehaviour en el puño: trigger + tracker + resolver + vibración. |
+| `HordeEnemy.cs` | MonoBehaviour: vida, knockback, destello, muerte y reaparición. |
+
+### Decisiones y por qué
+
+**La velocidad se estima con mínimos cuadrados, no con el delta del último frame ni con la resta de los extremos de la ventana.** El delta de un frame es inservible: un frame de tracking perdido o mal predicho mueve la mano 20 cm de golpe, lo que se lee como ~14 m/s y dispara un puñetazo a máxima potencia que el jugador nunca tiró. Restar el primer y el último punto de la ventana arregla el caso del pico *en medio*, pero no el del pico *en la última muestra*, porque ahí esa muestra se lleva todo el peso. El ajuste por mínimos cuadrados le da el peso de una muestra entre N. Es lo mismo que hace el `AttachPointVelocityTracker` de XRI. Ventana de 0.09 s, definida en segundos y no en número de muestras para que signifique lo mismo a 72 Hz en standalone que a la tasa que dé el editor por Link.
+
+**Curva de golpe.** Umbral 1.5 m/s (por debajo es un roce), potencia máxima a 7.5 m/s. El daño es `ceil(potencia × 2)` acotado a [1, 2]: cualquier golpe que cuente hace al menos 1 (un golpe que conecta y no hace nada se siente roto), y por encima de media potencia —4.5 m/s— hace 2. Con 3 de vida eso da los **2-3 golpes** que pide el objetivo. El impulso es `min(velocidad, 7.5) × 15 N·s`, o sea proporcional a la velocidad pero con el mismo techo que el daño, para que un manotazo descontrolado no mande a nadie a la órbita. A 20 kg de enemigo, un golpe estándar de 3 m/s da 45 N·s ≈ 2.25 m/s de knockback, y uno a tope 5.6 m/s.
+
+**El knockback lleva un sesgo hacia arriba (0.35) y se orienta por la componente horizontal del swing.** Sin el sesgo el enemigo resbala por el suelo, que se lee como empujón y no como golpe. Usar la horizontal en vez de la velocidad cruda evita que un golpe tirado hacia abajo clave al enemigo contra el suelo, donde el collider simplemente se come el impulso.
+
+**El puño es un trigger, no un collider sólido**, con Rigidbody cinemático. Sólido, la física empujaría a los enemigos en cada roce y el knockback dejaría de venir del modelo de golpe. El Rigidbody cinemático es lo que hace que los eventos de trigger lleguen de forma fiable: sin él Unity trata al collider en movimiento como un cuerpo estático que se teletransporta. El radio del trigger (9 cm) es mayor que el puño visible (5.5 cm) a propósito: en VR la mano no encuentra resistencia, así que cuando el puño visible ya está *dentro* del enemigo el jugador siente que pasó de largo.
+
+**Se resuelve en `OnTriggerEnter` y también en `OnTriggerStay`, con cooldown de 0.35 s por enemigo.** Solo con enter, un jugador que conecta y deja la mano metida no vuelve a golpear jamás. Solo con stay y sin cooldown, el golpe haría daño en cada paso de física. El cooldown **solo se arma cuando el golpe cuenta**: si se armara también con los roces, un roce lento bloquearía el puñetazo real que llega una décima después.
+
+**Haptics con `HapticsUtility.SendHapticImpulse`** (`UnityEngine.XR.Interaction.Toolkit.Inputs.Haptics`), estático, sin componente. Se revisó la alternativa: el rig del template **no tiene ningún `HapticImpulsePlayer` autorado** en ninguno de los dos mandos, y el que XRI crea solo cuando hace falta se construye por una API `internal` que este assembly no puede llamar. El rig sí trae `ActionBasedController` con la acción háptica enlazada, pero está marcado `[Obsolete]`. La utilidad estática solo necesita saber la mano, y por eso el generador de escena **hornea la lateralidad** en cada puño (`HordePocLayout.HandSideOf`): no se puede deducir del transform en runtime, y un puño que vibra el mando equivocado es un bug que solo se ve con el visor puesto.
+
+**Los enemigos se tiñen con `MaterialPropertyBlock`**, no asignando `Renderer.material`. Asignar el material lo clona por enemigo: a los 20-30 enemigos del objetivo serían 30 materiales que ya no batchean. Hay una prueba que verifica que el shader del dummy declara `_BaseColor`, porque escribir una propiedad que el shader no tiene es un no-op **silencioso** y el destello de impacto simplemente no se vería.
+
+**Los enemigos reaparecen** (1.5 s de cadáver + 3 s). El POC tiene 3 dummies fijos y no hay spawner hasta la Fase 3; sin esto, la única forma de volver a probar el tercer golpe es salir y volver a entrar en Play. Se ocultan apagando renderers y colliders, **no desactivando el GameObject**: un objeto desactivado detiene sus propias corrutinas y el temporizador de reaparición nunca dispararía. La Fase 3 reutiliza `Respawn()` como paso de reciclado del pool.
+
+### Salida verificable (verificada en el visor el 2026-07-25)
+
+1. `Tools > HordeAttack > 1. Generar Escena POC` — **ya está regenerada y guardada**, pero vuelve a correrlo si tocas el builder.
+2. Play con el Quest por Link. Golpeas un dummy: **vibra el mando**, el dummy **destella en blanco** y sale volando hacia atrás y hacia arriba.
+3. Golpe suave = sale poco. Golpe fuerte = sale mucho y más lejos. Por debajo de 1.5 m/s de mano no pasa nada (puedes empujarlo despacio y comprobarlo).
+4. Al tercer golpe estándar el dummy se pone **rojo oscuro**, sale despedido, desaparece a los 1.5 s y reaparece 3 s después en su sitio.
+5. `Window > General > Test Runner` en verde, EditMode y PlayMode.
+
+### Ya verificado en automático (2026-07-25, editor cerrado)
+
+- Compila sin errores.
+- **99/99 tests en verde**: 80 EditMode + 19 PlayMode. Cobertura de línea combinada **86.2 %** (subió desde el 73.6 % de la Fase 0). Por clase: `HordePocLayout` 100 %, `PunchSettings` 100 %, `PunchOutcome` 100 %, `HordeEnemy` 97 %, `VelocityWindow` 94.7 %, `PunchResolver` 91.6 %, `HandVelocityTracker` 91.6 %, `HordePocSceneBuilder` 75 %, `PunchDetector` 75 %, `UgsPreflight` 71 %.
+- Lo no cubierto de `PunchDetector` es la rama de haptics —**no hay mando conectado en batch mode**, así que la vibración real solo se puede comprobar en el visor; lo que sí está cubierto es la amplitud y duración que el resolver calcula— más `PruneExpired`, `OnDisable` y `OnValidate`.
+- Los tests PlayMode existen porque `Awake` **nunca corre** en un componente añadido en EditMode (el enemigo se estaría probando sin inicializar la vida) y porque `AddForce` no aparece en la velocidad hasta que la física simula. Ojo: un solo `WaitForFixedUpdate` **no basta**, resume antes del paso de física; hay que esperar dos.
+- **Pruebas de mutación manuales** (ocho, todas detectadas, cada una por los tests que le tocan):
+
+  | Mutación | Falla |
+  |---|---|
+  | Quitar el umbral de velocidad (EditMode) | `Resolve_IgnoresAHandThatIsBarelyMoving`, y solo ese |
+  | Quitar el umbral de velocidad (PlayMode) | `Swing_TooSlowly_LandsNothingAtAll`, `ReceivePunch_IgnoresASwingBelowTheThreshold`, `RestingInsideAnEnemy_DoesNotKeepDealingDamage`, `ReceivePunch_RaisesOnPunchedForEveryPunchThatLands` |
+  | Quitar el sesgo hacia arriba del knockback | `Resolve_LiftsTheEnemyOffTheFloor`, `Resolve_DoesNotDriveTheEnemyIntoTheGroundOnADownwardSwing` |
+  | Quitar el tope del impulso | `Resolve_CapsKnockbackAtFullPowerSoAFlailCannotLaunchAnyone`, y solo ese |
+  | Sustituir mínimos cuadrados por delta del último frame | `Velocity_DampsATrackingGlitchOnTheNewestSample`, y solo ese |
+  | Romper `HandSideOf` para la mano izquierda | los 2 tests de `HandSideOf` + los 27 del builder (lanza durante la construcción) |
+  | Quitar el cooldown de re-golpe | `Swing_ThroughAnEnemy_LandsExactlyOnePunch`, `Swing_TwiceInARow_LandsTwoPunches` |
+  | Que el enemigo no aplique el impulso | `ReceivePunch_ActuallyThrowsTheEnemy`, `ReceivePunch_ThrowsAHardPunchFurtherThanASoftOne` |
+
+- Escena regenerada y guardada en `Assets/HordeAttack/Scenes/HordePOC.unity`. Verificado en el YAML: 4 puños con `PunchDetector` + `HandVelocityTracker` + trigger, con `m_Hand` 0/0/1/1 (dos izquierdas, dos derechas), y 3 dummies con `HordeEnemy`.
+
+### Qué NO se hizo y por qué
+
+- **Nada de red.** `HordeEnemy` sigue siendo `MonoBehaviour`; pasa a `NetworkPhysicsInteractable` en la Fase 4. Por eso toda la matemática vive en `PunchResolver` y no dentro del componente: mover la mutación de vida detrás de un `[Rpc(SendTo.Owner)]` tiene que ser un cambio chico.
+- **No se puede agarrar** todavía (Fase 2) ni hay IA (Fase 3).
+- La vibración real **no está probada automáticamente**: en batch mode no hay dispositivo XR. `HapticsUtility` devuelve `false` en silencio, sin excepción, así que los tests corren igual pero no prueban ese eslabón.
 
 ---
 
@@ -223,7 +276,7 @@ Al cerrar cada fase: correr la suite completa + cobertura, marcar la fase como c
 | Fase | Estado | Fecha | Notas |
 |---|---|---|---|
 | 0 | ✅ | 2026-07-25 | Escena, assemblies y tests listos. 34/34 verde (31 EditMode + 3 PlayMode), cobertura 73.6%, 5 mutaciones detectadas. Corregidos en el visor: manos invisibles, jugador fuera del suelo, puños morados, enemigos del doble de tamaño. Verificada en el visor. |
-| 1 | ⬜ | | |
+| 1 | ✅ | 2026-07-25 | Puñetazo local completo: `VelocityWindow`, `PunchResolver`, `PunchSettings`, `HandVelocityTracker`, `PunchDetector`, `HordeEnemy`. 99/99 verde (80 EditMode + 19 PlayMode), cobertura 86.2%, 8 mutaciones detectadas. Escena regenerada. Verificada en el visor. |
 | 2 | ⬜ | | |
 | 3 | ⬜ | | |
 | 4 | ⬜ | | |

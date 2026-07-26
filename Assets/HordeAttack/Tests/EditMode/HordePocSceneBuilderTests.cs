@@ -343,13 +343,143 @@ namespace HordeAttack.Tests
             }
         }
 
+        /// <summary>
+        /// A solid collider would shove enemies around with raw collision response on every graze,
+        /// which is exactly the mushy feel the speed-threshold punch model exists to avoid.
+        /// </summary>
         [Test]
-        public void Build_LeavesFistsWithoutCollidersUntilPunchingExists()
+        public void Build_GivesEveryFistAPunchTriggerRatherThanASolidCollider()
         {
             foreach (var fist in Fists())
             {
-                Assert.That(fist.GetComponent<Collider>(), Is.Null,
-                    $"{fist.name} has a collider and would shove the dummies around on contact.");
+                var collider = fist.GetComponent<Collider>();
+
+                Assert.That(collider, Is.Not.Null, $"{fist.name} has no collider and can never hit anything.");
+                Assert.That(collider.isTrigger, Is.True,
+                    $"{fist.name}'s collider is solid, so it would push enemies around instead of punching them.");
+            }
+        }
+
+        /// <summary>
+        /// The trigger is authored in world meters but a <see cref="SphereCollider"/> stores its
+        /// radius in local units, and the fist is scaled down to hand size. Asserting on the world
+        /// bounds is what catches the conversion being dropped.
+        /// </summary>
+        [Test]
+        public void Build_SizesThePunchTriggerInWorldMeters()
+        {
+            foreach (var fist in Fists())
+            {
+                var radius = fist.GetComponent<Collider>().bounds.extents.x;
+
+                Assert.That(radius, Is.EqualTo(HordePocLayout.k_PunchTriggerRadius).Within(1e-3f),
+                    $"{fist.name}'s punch trigger is {radius:F3} m across instead of " +
+                    $"{HordePocLayout.k_PunchTriggerRadius:F3} m; the local/world scale conversion is wrong.");
+            }
+        }
+
+        /// <summary>
+        /// Unity only reports trigger contacts reliably for a collider that a Rigidbody moves;
+        /// without one a fist swung through an enemy is a teleporting static body and hits get
+        /// dropped. Kinematic, because the hand's pose comes from tracking, not from physics.
+        /// </summary>
+        [Test]
+        public void Build_DrivesThePunchTriggerWithAKinematicBody()
+        {
+            foreach (var fist in Fists())
+            {
+                var body = fist.GetComponent<Rigidbody>();
+
+                Assert.That(body, Is.Not.Null, $"{fist.name} has no Rigidbody, so its trigger fires unreliably.");
+                Assert.That(body.isKinematic, Is.True,
+                    $"{fist.name}'s Rigidbody is dynamic and would fall out of the player's hand.");
+                Assert.That(body.useGravity, Is.False, $"{fist.name} is affected by gravity.");
+            }
+        }
+
+        [Test]
+        public void Build_GivesEveryFistThePunchComponents()
+        {
+            foreach (var fist in Fists())
+            {
+                Assert.That(fist.GetComponent<HandVelocityTracker>(), Is.Not.Null,
+                    $"{fist.name} cannot measure how fast it is swinging.");
+                Assert.That(fist.GetComponent<PunchDetector>(), Is.Not.Null,
+                    $"{fist.name} cannot land a punch.");
+            }
+        }
+
+        /// <summary>
+        /// Handedness cannot be read off the transform at runtime, because haptics are addressed by
+        /// controller. A fist that buzzes the wrong hand is the kind of bug only the headset shows.
+        /// </summary>
+        [Test]
+        public void Build_TellsEachFistWhichHandItIs()
+        {
+            var offset = CameraOffset();
+
+            foreach (var anchorName in HordePocLayout.k_HandAnchorNames)
+            {
+                var detector = offset.Find(anchorName).Find(HordePocLayout.k_FistName)
+                    .GetComponent<PunchDetector>();
+
+                Assert.That(detector.hand, Is.EqualTo(HordePocLayout.HandSideOf(anchorName)),
+                    $"The fist on '{anchorName}' would vibrate the other controller.");
+            }
+        }
+
+        /// <summary>
+        /// The hit flash and the death colour are driven through a MaterialPropertyBlock, and
+        /// setting a property a shader does not declare is a silent no-op — no warning, no error,
+        /// just an enemy that never reacts visibly to being punched.
+        /// </summary>
+        [Test]
+        public void Build_GivesDummiesAMaterialTheHitFlashCanTint()
+        {
+            foreach (var dummy in Dummies())
+            {
+                var material = dummy.GetComponent<MeshRenderer>().sharedMaterial;
+
+                Assert.That(material, Is.Not.Null, $"{dummy.name} has no material.");
+                Assert.That(material.shader.isSupported, Is.True,
+                    $"{dummy.name} uses shader '{material.shader.name}', which would render as the " +
+                    "magenta error material in the headset.");
+                Assert.That(material.HasColor("_BaseColor"), Is.True,
+                    $"{dummy.name}'s shader has no _BaseColor, so being punched changes nothing on screen.");
+            }
+        }
+
+        [Test]
+        public void Build_MakesTheDummiesPunchable()
+        {
+            foreach (var dummy in Dummies())
+            {
+                var enemy = dummy.GetComponent<HordeEnemy>();
+
+                Assert.That(enemy, Is.Not.Null, $"{dummy.name} is not an enemy and cannot be punched.");
+                Assert.That(enemy.maxHealth, Is.GreaterThan(1),
+                    $"{dummy.name} dies to a single punch; enemies are meant to take 2-3.");
+            }
+        }
+
+        /// <summary>
+        /// Mass is what decides whether a punch visibly throws an enemy, so it is a gameplay value
+        /// and not an incidental physics default.
+        /// </summary>
+        [Test]
+        public void Build_MakesDummiesLightEnoughToBeThrownByAPunch()
+        {
+            var settings = new PunchSettings();
+            float standardImpulse = settings.minSpeed * settings.impulsePerSpeed;
+
+            foreach (var dummy in Dummies())
+            {
+                var body = dummy.GetComponent<Rigidbody>();
+
+                Assert.That(body.mass, Is.EqualTo(HordePocLayout.k_DummyMass).Within(1e-3f));
+                Assert.That(standardImpulse / body.mass, Is.GreaterThan(1f),
+                    $"{dummy.name} weighs {body.mass} kg, so even the weakest punch that counts " +
+                    "barely moves it and the hit reads as a miss.");
             }
         }
 
