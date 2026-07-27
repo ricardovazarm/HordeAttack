@@ -480,7 +480,9 @@ Se ensanchó por el **borde lejano**, no por el cercano: `k_SpawnNearDistance` e
 
 **Lo que esto NO resuelve:** hay **6 anclas de cuerpo**, así que solo 6 enemigos pueden estar colgados a la vez. Del séptimo en adelante, `LatchAnchorSelector` no encuentra sitio y se quedan empujando alrededor. Se deja así a propósito hasta ver en el visor si 6 encima ya es demasiado; si hicieran falta más, es añadir anclas, no tocar el selector.
 
-Verificado: **186/186 EditMode en verde** tras el cambio, y la escena regenerada y guardada con los 10 dummies entre **7.04 y 9.32 m**, ninguno a menos de 14 cm de otro en distancia. PlayMode no se volvió a correr —el editor estaba abierto y `-batchmode` aborta por el lock— pero ninguna prueba PlayMode lee las constantes de spawn.
+Verificado tras el cambio (2026-07-26, editor cerrado): **263/263 en verde** (186 EditMode + 77 PlayMode), cobertura de línea combinada **90.4 %** — las mismas cifras que al cerrar el grip, porque esto no añadió código, solo movió dos constantes. La escena está regenerada y guardada con los 10 dummies entre **7.04 y 9.32 m**, ninguno a menos de 14 cm de otro en distancia.
+
+> Ojo con la cobertura: corriendo **solo EditMode** sale **42.4 %**, no 90.4 %. No es una regresión — es que la mitad PlayMode del proyecto (todo lo que necesita `Awake`, física real o el toolkit) queda a cero. Para el número combinado hay que correr las dos plataformas contra el **mismo** `-coverageResultsPath`.
 
 ### Qué NO se hizo y por qué
 
