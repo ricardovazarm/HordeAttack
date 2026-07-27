@@ -5,6 +5,7 @@
         "HordeAttack",
         "HordeAttack.Editor",
         "VRMP",
+        "Unity.XR.Interaction.Toolkit",
         "Unity.XR.CoreUtils",
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner"

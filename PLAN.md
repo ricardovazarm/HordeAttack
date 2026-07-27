@@ -26,6 +26,7 @@ La métrica de juego es cuánto aguantas sin que te sepulten.
 | Cómo te zafas (2026-07-25) | **Las dos vías:** a puñetazos con la mano libre, o arrancándolo con el grip y aventándolo |
 | Dónde se cuelgan (2026-07-25) | Piernas, cintura, brazos y torso/hombros. **Nunca en la cabeza ni tapando la vista** — marea y se lee como bug |
 | Formas de llegar (2026-07-25) | Dos estilos mezclados: unos **brincan encima** (anclas altas) y otros **agarran por abajo/los lados** (anclas bajas), llegando desde direcciones distintas |
+| Tamaño de la horda en el POC (2026-07-26) | **10 enemigos** en escena en vez de 3, para probar la lectura de horda antes de que exista el spawner. La banda de spawn se ensanchó a **7-9.5 m** porque el escalonado de llegadas no cabe en 1.5 m con 10 (ver Fase 2b) |
 
 ## Arquitectura elegida
 
@@ -55,6 +56,23 @@ Se descartó el patrón de *Whack-A-Pig* (enemigos como GameObjects locales inst
 # FASES
 
 > Regla: no se avanza de fase hasta que la anterior esté marcada como completada aquí.
+
+## Dónde retomar (2026-07-26)
+
+**Siguiente paso: ponerte el Quest y correr la salida verificable de la Fase 2b.** No hay que escribir código para eso; la escena ya está regenerada y guardada en `Assets/HordeAttack/Scenes/HordePOC.unity`, ahora **con 10 enemigos**. Abrirla y darle Play.
+
+Lo que hay que mirar con atención es lo **nuevo**, que es el arbitraje puño/grip y nunca se ha visto puesto:
+
+1. Aprietas el grip y estiras la mano hacia un dummy suelto: **lo agarras, no sale volando**.
+2. Grip apretado y mano quieta: el que camina hacia ti **se te queda en la mano**.
+3. Mano abierta: ese mismo movimiento sigue siendo un puñetazo que lo manda 5-10 m.
+4. Sueltas el grip y golpeas de inmediato: el golpe conecta.
+
+Si eso se siente bien, se repasa el resto de la lista de la Fase 2b (arrancar un colgado, aventar contra otro, aventar contra el suelo, el cadáver se cae de la mano), se marca la fase ✅ y se arranca la Fase 3.
+
+**Con 10 enemigos hay dos cosas nuevas que mirar de paso**, porque es la primera vez que se prueban a esta escala: si **6 colgados a la vez** (el máximo, hay 6 anclas de cuerpo) tapan la vista o marean, y qué hacen los **4 que se quedan sin ancla** — hoy siguen empujando alrededor sin engancharse, que es una lectura que nunca se ha visto puesta.
+
+**Estado del repo:** todo lo de la Fase 2b y la subida a 10 enemigos está **commiteado y pusheado** a `main`. Los drivers de mutación (`mutate3.py`, `mutate4.py`) vivían en el scratchpad de la sesión y **se perdieron** al limpiar; si hacen falta otra vez, se rehacen desde las tablas de mutaciones de abajo.
 
 ## FASE 0 — Andamiaje, tests y escena base
 
@@ -199,6 +217,8 @@ Esta es la fase que convierte la escena en un juego: hasta ahora los dummies era
 
 Sigue sin haber red (Fase 4) ni oleadas (Fase 3): **los mismos 3 dummies** de la Fase 1, con el `Respawn()` que ya existe devolviéndolos al ataque.
 
+> Al final de la Fase 2b esos 3 pasaron a **10**, y la banda de spawn de 7-8.5 m a **7-9.5 m**. Todo lo que sigue en esta fase describe el estado en que se cerró.
+
 ### Alcance
 
 **1. Locomoción — se movió aquí desde la Fase 3.** Sin esto no hay nada que probar: un enemigo que no se te acerca no se te puede colgar. `EnemyLocomotion` avanza hacia el jugador más cercano con dirección directa + separación entre enemigos, sin NavMesh — en una arena abierta y plana basta, y es mucho más barato. La Fase 3 se queda con lo suyo: oleadas, pooling y contadores.
@@ -333,38 +353,142 @@ Tres consecuencias que conviene tener presentes:
 
 ## FASE 2b — Arrancar y aventar
 
-**Estado:** ⬜ Pendiente (depende de la 2a)
+**Estado:** 🟡 Implementada y verificada en automático el 2026-07-26 — **falta probarla en el visor**
+
+Se probó una primera vez en el visor el 2026-07-25 y salió un problema de fondo: no se podía agarrar un enemigo suelto porque el mando lo leía como puñetazo. Se corrigió con el arbitraje puño/grip que está más abajo, y esa corrección **todavía no se ha visto en el visor**.
 
 La segunda herramienta de defensa: el grip. Aquí es donde un enemigo colgado deja de ser solo un problema y se vuelve **munición**.
 
-### Alcance
+### Qué se construyó
 
-- **`XRGrabInteractable` en el enemigo**, configurado para que el grip lo levante. Hay que decidir el `movementType`: *Velocity Tracking* mantiene el Rigidbody dinámico y hace que aventarlo transfiera velocidad de verdad, que es justo lo que esta fase necesita.
-- **Arrancarlo de encima:** si lo agarras estando colgado de ti, se desengancha del ancla y pasa a tu mano. Estado `Grabbed`, deja de intentar volver a colgarse mientras lo sostienes.
-- **También se agarran enemigos sueltos**, no solo los que ya te tienen.
-- **Enemigo aventado que impacta a otro: ambos reciben daño** en función de la velocidad relativa del impacto. Lógica pura nueva (`ImpactSettings` + `ImpactResolver`), en la misma línea que `PunchResolver`: la matemática fuera del componente para que la Fase 4 solo tenga que meterla detrás de un RPC.
+Lo nuevo vive en `Assets/HordeAttack/Runtime/Combat/`:
 
-### Decisiones técnicas que ya se ven venir
+| Archivo | Qué es |
+|---|---|
+| `ImpactKind.cs` | Enum: contra otro enemigo o contra el suelo. Cada uno se puntúa en su propia banda de velocidad. |
+| `ImpactSettings.cs` | Datos serializables del modelo de impacto: dos bandas de velocidad y el tope de daño. |
+| `ImpactResolver.cs` | Lógica pura. Velocidad de acercamiento + qué se golpeó → `ImpactOutcome` (si contó, potencia, daño). |
+| `ImpactDetector.cs` | MonoBehaviour en el enemigo: convierte una colisión real en daño para los dos lados. |
+| `EnemyGrabInteractable.cs` | `XRGrabInteractable` especializado: despega al enemigo antes de que el toolkit lo tome, y lo devuelve a la física al soltarlo. |
 
-**El puño y el grip comparten la mano.** El trigger de 9 cm del `PunchDetector` vive en el mismo sitio desde el que vas a agarrar. Hay que definir qué pasa mientras sostienes un enemigo y mueves el brazo rápido: lo natural es que el `PunchDetector` ignore al que trae en la mano, igual que en la 2a ignora al colgado de ese brazo.
+Modificados: `HordeEnemy` (`isHeld`, `holder`, `isGrabbable`, `ReceiveImpact`, `PrepareForGrab`/`ReleaseFromGrab`, `ForceRelease`, `ReleaseToPhysics` compartido con el puñetazo), `EnemyLocomotion` (`ReleaseForGrab` y parar mientras lo sostienen), `PunchDetector` (ignorar también al que traes en esa mano), `EnemyState` (`Grabbed`), `HordePocSceneBuilder` (dummies agarrables + detector de impacto).
 
-**Aventar contra el suelo también cuenta.** El mismo `ImpactResolver` debe cubrirlo, o aventar a alguien de cabeza contra el piso no haría nada y se leería como que el golpe no registró.
+### Decisiones y por qué
 
-**Robo de propiedad por colisión.** `NetworkPhysicsInteractable` ya trae `OnCollisionEnter → RequestOwnership()` para objetos rápidos, que es literalmente "aviento un enemigo contra otro" ya resuelto — pero eso solo aplica desde la Fase 4. Aquí se implementa local y hay que dejar el cálculo donde esa transición sea barata.
+**Es una subclase de `XRGrabInteractable`, no un componente que escucha `selectEntered`, y eso no es estilo: es lo único que funciona.** El toolkit apunta en `Grab()` las dos cosas que restaurará al soltar — **el padre del transform y si el Rigidbody era cinemático**. Un enemigo colgado del jugador es exactamente las dos: emparentado a un ancla y cinemático. Todos los eventos públicos se disparan **después** de `Grab()`, así que un listener llega tarde y el toolkit ya decidió que al soltarlo lo va a **volver a colgar del pecho del jugador, congelado en el aire**. Sobrescribir `Grab()` es el único gancho que corre antes. Las dos pruebas que lo fijan son `Release_OfATornOffEnemy_DoesNotHangItBackOnThePlayer` (padre y flag cinemático) y `Grab_TearsALatchedEnemyOffThePlayer`.
 
-### Salida verificable
+**No se puede obligar a una mano a soltar mientras el grip sigue apretado.** Cancelar la selección desde el `XRInteractionManager` no pega: el enemigo sigue dentro del trigger de la mano y el toolkit lo devuelve al frame siguiente. Se probaron las dos vías obvias (cancelar, y desregistrar apagando el componente) y las dos se deshacen solas. Lo que el toolkit **sí** respeta es un interactable que dice que no se puede seleccionar, porque lo re-evalúa cada frame. Por eso todo pasa por `HordeEnemy.isGrabbable` (`EnemyGrabInteractable.IsSelectableBy`), que se cierra en dos casos: **muerto** —el cadáver se cae de la mano en vez de pasearse hasta que desaparece— y **recién reaparecido**, durante 0.25 s, para que reciclar un enemigo que alguien tenía agarrado no lo teletransporte a casa y el toolkit lo arrastre de vuelta. Es el mismo truco que hace el `NetworkSocketInteractor` del template al apagar su socket medio segundo tras spawnear.
 
-1. Con el grip agarras un dummy suelto y lo levantas; se queda colgando de tu mano.
-2. Un dummy colgado de ti: lo agarras con el grip y **se lo arrancas de encima**.
-3. Lo avientas contra otro dummy: **ambos** reciben daño y salen despedidos.
-4. Aventarlo contra el suelo suave no lo mata; aventarlo fuerte sí.
-5. Sosteniendo un enemigo y moviendo el brazo, **no** se resuelven puñetazos sobre el que traes en la mano.
-6. `Window > General > Test Runner` en verde, EditMode y PlayMode.
+**Velocity Tracking, no Kinematic.** Es el único `movementType` que deja el Rigidbody dinámico mientras lo cargas, y por tanto el único donde soltarlo le entrega la velocidad de la mano de verdad. Con Kinematic, aventar es dejar caer. Hay una prueba del builder (`Build_MakesEveryDummyGrabbableAndThrowable`) que lo fija, porque es una casilla del inspector que alguien puede cambiar sin darse cuenta de que rompe la fase entera.
 
-### Tests que exige la fase
+**El impacto se mide en la componente NORMAL de la velocidad, no en la magnitud.** No es un refinamiento académico: un enemigo golpeado **derrapa por el suelo un par de segundos, en contacto todo el rato**. Medido en velocidad de cierre cruda, eso es un impacto a máxima potencia en cada paso de física y el enemigo **se muere de resbalar**. Proyectado sobre la normal, ese mismo derrape vale casi cero: solo cuenta la parte del movimiento que lo mete *contra* la superficie, que es lo que significa "impacto". Lo prueban `ApproachSpeed_IgnoresSlidingAlongASurface` (EditMode) y `Skidding_AcrossTheGround_LeavesTheEnemyUnharmed` (PlayMode, con suelo y gravedad reales).
 
-- **EditMode:** `ImpactResolver` — velocidad relativa → daño de ambos, umbral por debajo del cual el impacto no cuenta, tope, e impacto contra el suelo.
-- **PlayMode:** arrancar un colgado lo desengancha del ancla y lo libera; soltarlo transfiere velocidad; el enemigo sostenido no vuelve a colgarse mientras lo tienes.
+**Dos bandas de velocidad separadas, y esto es lo más delicado de la fase.** Suelo **6→10 m/s**, contra otro enemigo **6→14 m/s**, tope de daño 3 en ambos. Se ven redundantes y no lo son:
+
+- **Contra el suelo el proyectil casi siempre es un enemigo que acabas de golpear.** Sale disparado a hasta 12.5 m/s y vuelve a tocar el piso con una componente vertical de ~4.1 m/s, *cada vez*. Si eso contara, **todo puñetazo mataría** y los "2-3 golpes" de la Fase 1 se irían sin que nadie tocara el modelo de golpe. El umbral de 6 deja 1.9 m/s de margen. `Ground_ShrugsOffTheLandingOfEvenTheHardestPunch` lo asegura leyendo las constantes **del modelo de golpe**, no una copia: subir la distancia de knockback o bajar el umbral del suelo fallan los dos ahí.
+- **Contra otro enemigo ese mismo proyectil es justo lo que quieres que duela.** Con el techo del suelo (10), cualquier gnomo golpeado mataría de una a su vecino y el grip sería una forma lenta de hacer lo que ya hacía un jab. Estirar el techo a 14 deja sitio entre un golpe flojo (1 de daño al vecino) y uno a tope (3, muerte). `Creature_TakesDamageFromAnEnemyThatWasMerelyPunchedIntoIt` y `Creature_IsNotKilledOutrightByTheWeakestPunchInTheGame` lo aprietan por los dos lados.
+
+**El daño del impacto es simétrico y se cobra una sola vez.** Unity notifica la misma colisión a los **dos** cuerpos, así que sin nada más el par pagaría el doble. Resuelve solo el enemigo con el `GetInstanceID()` menor —los ids son únicos, así que exactamente uno de los dos resuelve y ninguno tiene que ponerse de acuerdo con el otro sobre quién aventó a quién—. `Throw_IntoAnotherEnemy_HurtsBothOfThemExactlyOnce` asierta **exactamente 1 de daño a cada uno**, no "algo de daño", que es lo que convierte la prueba en una prueba.
+
+**El impacto no aplica knockback propio.** Los dos cuerpos son dinámicos y el motor ya resolvió el choque cuando esto corre; un impulso escrito encima lo duplicaría. La única excepción es un enemigo colgado del jugador: es cinemático en el instante del contacto, así que no recibe impulso y simplemente se cae al soltar el ancla. Que se despegue es lo que importa ahí (`Throw_AtALatchedEnemy_KnocksItOffThePlayer`).
+
+**Un enemigo sostenido no hace daño al chocar, y tampoco lo recibe.** Velocity tracking empuja el cuerpo agarrado a través de lo que sea a la velocidad que pida la mano; contando esos contactos, el jugador segaría la horda **caminando** con un gnomo en el puño, y de paso lo iría desgastando gratis. Hay que **soltarlo** para que sea un arma (`Held_EnemyDrivenThroughAnotherOne_HurtsNeither`).
+
+**El puño ignora también al enemigo que trae esa mano.** Es el mismo problema de la Fase 2a por el otro lado: el interactor que agarra cuelga del mismo transform de mano que el puño, así que el enemigo cargado vive dentro del trigger que lo golpearía. La exclusión es **por mano**, no global: un enemigo en la mano del *otro* jugador sigue siendo blanco legítimo, que es lo que la Fase 4 va a querer.
+
+### Arbitraje puño/grip (2026-07-26, tras la primera prueba en el visor)
+
+Al probarla salió que **no se podía agarrar un enemigo suelto**: el mando lo leía como puñetazo. La única forma de agarrar uno era cuando ya se te había colgado encima.
+
+La causa es que el puño y el grip son **el mismo volumen en el mismo transform de mano** y nadie arbitraba entre ellos: el trigger del puño mide 9 cm y el del Direct Interactor 10 cm, y son hermanos bajo el ancla. Estirar la mano en VR pasa de 1.5 m/s sin querer, así que el puñetazo se resolvía primero y el knockback de 5-10 m se llevaba al enemigo antes de que cerraras los dedos. Un colgado sí se dejaba porque lo tienes pegado al cuerpo y casi no mueves la mano.
+
+**Decisión: mano abierta pega, mano cerrada agarra.** Mientras el grip esté apretado, esa mano no resuelve puñetazos (`PunchDetector.IsGrabbing`).
+
+**Y no basta con eso: había que cambiar también el modo de selección de las manos.** Los cuatro `XRDirectInteractor` del rig del template vienen en `InputTriggerType.StateChange`, donde apretar el grip **sin tener nada agarrado cuenta un solo frame** y deja de contar:
+
+```csharp
+case InputTriggerType.StateChange:
+    active = wasPerformedThisFrame || (m_HasSelection && !wasCompletedThisFrame);
+```
+
+O sea que el jugador que aprieta antes de llegar —que es justo lo que el arbitraje le exige— apagaba su propio puñetazo **y no agarraba nada**: peor que cualquiera de las dos mitades por separado. La mutación lo confirmó: devolver las manos a `StateChange` tumba la prueba cabecera, no solo la del builder. Van juntos, y por eso la elección vive en `HordePocLayout.k_GripTrigger` (= `State`), que leen tanto el builder como los tests. `State` además regala la otra mitad del gesto: cierras la mano, te quedas quieto, y el que viene caminando se te mete en el puño.
+
+**Cómo se lee el grip.** `XRBaseInputInteractor.isSelectActive` **no sirve**: está filtrado por ese mismo `selectActionTrigger` y responde "¿puedo empezar una selección este frame?", que no es la pregunta. Este rig además es de la era XRI 2.x — no serializa `m_SelectInput`, así que el reader queda en `InputSourceMode.Unused` y la entrada real llega por la ruta antigua (`ActionBasedController.selectInteractionState`, con el grip enlazado en `XRI Default Input Actions`). La señal que se rellena igual en **las dos** rutas, cada frame y desde la entrada cruda, es `logicalSelectState.isPerformed`. Es la que se usa, y no toca ninguna API marcada `[Obsolete]`.
+
+Detalles que conviene no volver a descubrir:
+
+- El interactor se busca **hacia abajo desde el ancla de mano**, no hacia arriba desde el puño: son **hermanos**, así que `GetComponentInParent` no lo encuentra nunca. Con `includeInactive`, porque `XRInputModalityManager` apaga la rama que no esté en uso.
+- Se busca `XRDirectInteractor` en concreto, no `XRBaseInputInteractor`: bajo el ancla del mando también cuelgan un Ray Interactor y un Teleport Interactor, y el de teleporte lleva su propio controlador con otras acciones — preguntarle por el grip contestaría sobre el joystick.
+- La referencia es **opcional a propósito**. Sin interactor en la mano, el puño pega como siempre. Eso es lo que mantiene verdes sin tocarlas las 8 pruebas de `PunchDetectorTests`, que construyen un puño suelto, y lo confirmó la mutación de "suprimir siempre".
+- El valor se lee con un frame de retraso (`TryPunch` corre en física, el toolkit refresca el estado en Update). 14 ms contra un gesto de medio segundo.
+
+En los tests la entrada se inyecta por la vía soportada del toolkit (`selectInput.inputSourceMode = ManualValue` + `QueueManualState`), que **solo funciona porque una mano de test no tiene un controlador encima**; con uno, el toolkit toma la ruta antigua e ignora el reader. Ojo: `QueueManualState` surte efecto **al frame siguiente**, por diseño.
+
+### Salida verificable en el visor
+
+1. La escena **ya está regenerada y guardada**; abre `Assets/HordeAttack/Scenes/HordePOC.unity` y dale Play con el Quest por Link. Vuelve a correr `Tools > HordeAttack > 1. Generar Escena POC` solo si tocas el builder.
+2. **Aprietas el grip y estiras la mano hacia un dummy suelto: lo agarras, no sale volando.** Con el grip apretado y la mano quieta, el que camina hacia ti **se te queda en la mano**. Con la mano abierta, ese mismo movimiento sigue siendo un puñetazo que lo manda 5-10 m. Sueltas el grip y golpeas de inmediato: el golpe conecta.
+3. Con el **grip** agarras un dummy suelto y lo levantas: se queda colgando de tu mano y deja de caminar.
+4. Un dummy colgado de ti: lo agarras con el grip y **se lo arrancas de encima**. Al soltarlo **no** vuelve a tu pecho ni se queda congelado en el aire.
+5. Lo avientas contra otro dummy: **ambos** reciben daño y salen despedidos. Un empujón flojo no hace nada.
+6. Aventarlo **fuerte contra el suelo lo mata**; soltarlo desde la altura de la mano, no. Y un enemigo que golpeaste y sale rodando **no** se muere de rodar.
+7. Sosteniendo un enemigo y moviendo el brazo, **no** se resuelven puñetazos sobre el que traes en la mano, ni se le hace daño por pasearlo entre los demás.
+8. Al morir con él en la mano, **el cadáver se cae**; no se queda agarrado.
+9. `Window > General > Test Runner` en verde, EditMode y PlayMode.
+
+### Ya verificado en automático (2026-07-26, editor cerrado)
+
+- Compila sin errores.
+- **263/263 tests en verde**: 186 EditMode + 77 PlayMode (venía de 218 al cerrar la 2a; 258 antes del arbitraje puño/grip). Cobertura de línea combinada **90.4 %** (venía de 89.1 %). Por clase: `ImpactSettings` y `ImpactOutcome` al 100 %, `ImpactDetector` 96.2 %, `ImpactResolver` 94.1 %, `HordeEnemy` 94.8 %, `EnemyLocomotion` 87.9 %, `EnemyGrabInteractable` 84.6 %, `PunchDetector` 81.6 %, `HordePocSceneBuilder` 79.6 %.
+- Escena regenerada y guardada. Verificado en el YAML: los 3 dummies llevan `EnemyGrabInteractable` con `m_MovementType: 0` (= `VelocityTracking`) e `ImpactDetector`, y los **4** `XRDirectInteractor` del rig quedaron con `m_SelectActionTrigger: 0` (= `State`) como override de prefab. Ojo al comprobarlo: el campo crudo vive en el prefab del template, así que en la escena hay que buscarlo en `m_Modifications`, no como campo suelto.
+- **Pruebas de mutación manuales: dieciséis, todas detectadas**, cada una por los tests que le tocan. Los drivers están en el scratchpad de la sesión (`mutate3.py` para la fase, `mutate4.py` para el arbitraje puño/grip).
+
+  | Mutación | Falla |
+  |---|---|
+  | No liberar al enemigo antes de que el toolkit tome el control | `Grab_TearsALatchedEnemyOffThePlayer`, `Release_OfATornOffEnemy_DoesNotHangItBackOnThePlayer`, `Held_EnemyNeitherWalksNorTakesHoldOfYou` |
+  | No devolverlo a su locomoción al soltarlo | `Release_ThrowsTheEnemyAtTheSpeedOfTheHand`, y solo ese |
+  | Dejar que el toolkit agarre un cadáver | `Dying_WhileHeld_MakesTheHandLetGo`, `Respawn_WhileHeld_MakesTheHandLetGo` |
+  | Que el enemigo siga caminando mientras lo sostienes | `Held_EnemyNeitherWalksNorTakesHoldOfYou`, y solo ese |
+  | Quitar la exclusión del enemigo que traes en la mano | `PunchingWithTheHandThatIsHoldingAnEnemy_ThrowsNoPunchesAtIt`, y solo ese |
+  | Cobrar el impacto en los dos cuerpos que Unity notifica | `Throw_IntoAnotherEnemy_HurtsBothOfThemExactlyOnce`, y solo ese |
+  | Dejar que un enemigo sostenido haga daño al chocar | `Held_EnemyDrivenThroughAnotherOne_HurtsNeither`, y solo ese |
+  | Medir el impacto con la velocidad cruda y no la normal | `ApproachSpeed_IgnoresSlidingAlongASurface`, `Skidding_AcrossTheGround_LeavesTheEnemyUnharmed` |
+  | Bajar el umbral del suelo por debajo de la caída de un golpe | `Ground_ShrugsOffTheLandingOfEvenTheHardestPunch`, `Ground_ShrugsOffBeingDroppedFromHandHeight`, `Dropping_OntoTheGround_LeavesTheEnemyUnharmed` |
+  | Puntuar el suelo con la misma curva que a otro enemigo | `Defaults_LetAHardSlamAtTheFloorKillAHealthyEnemy`, `Defaults_ScoreTheGroundAndACreatureOnDifferentCurves` |
+  | Dejar que un enemigo sostenido se cuelgue del jugador | `Held_EnemyRefusesAnAnchorEvenWhenHandedOne`, y solo ese |
+  | No cerrar el agarre al reaparecer | `Respawn_WhileHeld_MakesTheHandLetGo`, y solo ese |
+  | Quitar el guard de grip en `TryPunch` | `ReachingForALooseEnemy_WithTheGripHeld_GrabsItInsteadOfPunchingIt`, y solo ese |
+  | Devolver las manos a `StateChange` | `Build_LeavesTheGripOpenWhileItIsHeld`, `Grip_HeldBeforeContact_CatchesAnEnemyThatWalksIntoTheHand`, `ReachingForALooseEnemy_WithTheGripHeld_GrabsItInsteadOfPunchingIt` |
+  | Suprimir el puñetazo siempre, sin mirar el grip | `ReachingForALooseEnemy_WithTheGripOpen_StillPunchesIt`, `Grip_ReleasedAfterCarrying_LetsTheHandPunchAgain` |
+  | No encontrar nunca el interactor de la mano | `ReachingForALooseEnemy_WithTheGripHeld_GrabsItInsteadOfPunchingIt`, y solo ese |
+
+### Tres cosas que costaron y no hay que volver a descubrir
+
+**En batch mode los frames duran 0.2 ms y eso rompe el lanzamiento — pero no es un bug del juego.** El suavizado de lanzamiento de XRI se niega a medir nada en un frame de menos de **1 ms** (`k_DeltaTimeThreshold`, una protección contra un bug de timing del Quest). Una corrida headless no tiene nada que dibujar y despacha frames en ~0.2 ms, así que **todas** las muestras se tiran y todo lanzamiento sale a 0 m/s. Se midió antes de tocar nada (`Time.deltaTime` medio de 0.000212 s). La solución es fijar el reloj con `Time.captureDeltaTime = 1/72` en el `SetUp` de `EnemyGrabTests` —y restaurarlo en el `TearDown`, o se lo lleva el resto de la corrida—. Ojo con el efecto secundario: con el reloj fijado, `Time.deltaTime` y `Time.unscaledDeltaTime` **dejan de coincidir**, así que mover la mano con el reloj unscaled la hace recorrer una fracción de lo que el toolkit luego le acredita, y el lanzamiento sale a un veinteavo de su velocidad. Los helpers de ese archivo usan `Time.deltaTime` a propósito.
+
+**El orden de `AddComponent` con `[RequireComponent]` seguía mordiendo, y esta vez en el builder.** `EnemyLocomotion` declara `[RequireComponent(typeof(HordeEnemy))]`, así que añadirla primero hace que Unity cree un `HordeEnemy` por su cuenta; el `AddComponent<HordeEnemy>()` explícito de después es **rechazado** —`HordeEnemy` es `[DisallowMultipleComponent]`— y **devuelve null**. El builder venía funcionando por accidente desde la Fase 2a: ignoraba el valor de retorno y se quedaba con el que Unity había creado solo. Un test que sí usa el retorno se estrella con un `NullReferenceException` que no dice nada. Corregido: en el builder y en los tests, **`HordeEnemy` va antes que `EnemyLocomotion`**.
+
+**Aventar contra otro enemigo lo prueba `ImpactResolverTests`, no la simulación.** El acoplamiento importante de esta fase —que aterrizar tras un puñetazo no puede ser un impacto letal— se afirma en EditMode como una **desigualdad entre las dos tablas de tuning**, leyendo `PunchSettings` de verdad. Escribirlo como una prueba de física ("golpea y mira si muere") lo habría dejado a merced de que la simulación reprodujera justo el caso peor; escrito como desigualdad, falla el día que alguien suba la distancia de knockback.
+
+### Subida a 10 enemigos (2026-07-26)
+
+El POC llevaba **3 dummies** desde la Fase 0, que alcanzaban para probar mecánicas sueltas pero no para ver si esto se lee como horda. Se subió a **10** (`HordePocSceneBuilder.k_ReferenceDummyCount`). Sigue sin haber spawner —eso es la Fase 3—: son 10 objetos fijos en la escena, con el `Respawn()` de siempre devolviéndolos al ataque.
+
+**Y hubo que ensanchar la banda de spawn de 7-8.5 m a 7-9.5 m**, que es el detalle que no era obvio. El escalonado de distancias sale de una secuencia de razón áurea, y esa secuencia deja su par más cercano a **1/18 de la banda** cuando hay 10 elementos: sobre 1.5 m son 8.4 cm, o sea dos enemigos entrando prácticamente hombro con hombro. `Build_StaggersHowFarAwayTheDummiesStart` exige más de 10 cm entre cualesquiera dos, y falló en cuanto se subió el número — la prueba de la Fase 2a hizo exactamente su trabajo. Con 2.5 m de banda ese par vuelve a **14 cm**.
+
+Se ensanchó por el **borde lejano**, no por el cercano: `k_SpawnNearDistance` está afinado como tiempo de llegada (~3.7 s al primero) y moverlo cambiaría la apertura de la partida. Lo único que cambia es que la cola de la oleada llega algo más tarde, que con una horda es lo que se busca. La arena (radio 15 m) sigue sobrada, y `SpawnBand_GivesThePlayerSecondsToSeeTheHordeComing` cubre el otro lado: si alguien acerca el spawn o acelera a los enemigos, salta.
+
+**Lo que esto NO resuelve:** hay **6 anclas de cuerpo**, así que solo 6 enemigos pueden estar colgados a la vez. Del séptimo en adelante, `LatchAnchorSelector` no encuentra sitio y se quedan empujando alrededor. Se deja así a propósito hasta ver en el visor si 6 encima ya es demasiado; si hicieran falta más, es añadir anclas, no tocar el selector.
+
+Verificado: **186/186 EditMode en verde** tras el cambio, y la escena regenerada y guardada con los 10 dummies entre **7.04 y 9.32 m**, ninguno a menos de 14 cm de otro en distancia. PlayMode no se volvió a correr —el editor estaba abierto y `-batchmode` aborta por el lock— pero ninguna prueba PlayMode lee las constantes de spawn.
+
+### Qué NO se hizo y por qué
+
+- **Nada de red.** `HordeEnemy` sigue siendo `MonoBehaviour`. El `ImpactResolver` está fuera del componente justo para que la Fase 4 solo tenga que meterlo detrás de un `[Rpc(SendTo.Owner)]`. El robo de propiedad por colisión de `NetworkPhysicsInteractable` es de la Fase 4; aquí el impacto es local.
+- **Con un enemigo en la mano no se puede golpear a otros con él.** Es deliberado (ver arriba). Si al probarlo en el visor se echa de menos, es un cambio chico: quitar el `isHeld` de `ImpactDetector.CanBeInvolved` y ponerle su propio umbral de velocidad.
+- **Reciclar un enemigo que alguien tiene agarrado le deja algo de velocidad de lanzamiento.** `Respawn()` pone la velocidad a cero, pero el toolkit escribe la del lanzamiento **al final del frame**, después. En el juego no se nota porque la locomoción del enemigo sobrescribe x/z en el siguiente paso de física. **La Fase 3 lo tiene que tener presente** cuando el pool empiece a reciclar enemigos vivos.
+- **`Staggered` sigue sin existir**, igual que al cerrar la 2a. Se promueve en la Fase 3.
+- **La vibración real sigue sin probarse en automático**: en batch mode no hay dispositivo XR.
 
 ---
 
@@ -374,8 +498,8 @@ La segunda herramienta de defensa: el grip. Aquí es donde un enemigo colgado de
 
 **`EnemyLocomotion` ya no está aquí: se movió a la Fase 2a**, porque sin acercarse no hay nada que colgarse. Esta fase es escala, no comportamiento nuevo.
 
-- `HordeSpawner` con oleadas crecientes, reusando `Pooler` del template en vez de Instantiate/Destroy. `HordeEnemy.Respawn()` es el paso de reciclado.
-- Máquina de estados completa: `Walking / Leaping / Latched / Staggered / Grabbed / Dead`. **`Staggered` entra aquí**: un golpe interrumpe el salto de un enemigo que se te venía encima, y con 20-30 encima esa interrupción es la diferencia entre poder defenderte y no.
+- `HordeSpawner` con oleadas crecientes, reusando `Pooler` del template en vez de Instantiate/Destroy. `HordeEnemy.Respawn()` es el paso de reciclado. **Ojo con reciclar un enemigo que un jugador tiene agarrado:** `Respawn()` ya cierra el agarre 0.25 s (`isGrabbable`) para que la mano no lo arrastre de vuelta, pero el toolkit escribe la velocidad del lanzamiento al final del frame, después de que `Respawn()` la puso a cero. Hoy no se nota porque la locomoción la sobrescribe; con un pool conviene comprobarlo.
+- Máquina de estados completa: `Walking / Leaping / Latched / Staggered / Grabbed / Dead`. `Grabbed` ya existe desde la Fase 2b. **`Staggered` entra aquí**: un golpe interrumpe el salto de un enemigo que se te venía encima, y con 20-30 encima esa interrupción es la diferencia entre poder defenderte y no.
 - La separación entre enemigos empieza a importar de verdad: con 3 dummies casi no se nota, con 30 es lo que evita que se apilen en un solo bulto.
 - Contador de enemigos eliminados y oleada actual.
 
@@ -468,7 +592,7 @@ Al cerrar cada fase: correr la suite completa + cobertura, marcar la fase como c
 | 0 | ✅ | 2026-07-25 | Escena, assemblies y tests listos. 34/34 verde (31 EditMode + 3 PlayMode), cobertura 73.6%, 5 mutaciones detectadas. Corregidos en el visor: manos invisibles, jugador fuera del suelo, puños morados, enemigos del doble de tamaño. Verificada en el visor. |
 | 1 | ✅ | 2026-07-25 | Puñetazo local completo: `VelocityWindow`, `PunchResolver`, `PunchSettings`, `HandVelocityTracker`, `PunchDetector`, `HordeEnemy`. 99/99 verde (80 EditMode + 19 PlayMode), cobertura 86.2%, 8 mutaciones detectadas. Escena regenerada. Verificada en el visor. |
 | 2a | ✅ | 2026-07-25 | Locomoción, salto, anclas y enganche completos. 218/218 verde (162 EditMode + 56 PlayMode), cobertura 89.1 %, 19 mutaciones detectadas. Corregido tras probar en el visor: spawn a 7-8.5 m en abanico por delante, avance a 1.6 m/s con techo de 3 m/s, primera llegada ~3.7 s, y knockback de 5-10 m (antes 30 cm). Escena regenerada. Verificada en el visor. |
-| 2b | ⬜ | | |
+| 2b | 🟡 | 2026-07-26 | Grip completo: arrancar de encima, cargar y aventar, más daño por impacto contra enemigos y contra el suelo. `ImpactKind`, `ImpactSettings`, `ImpactResolver`, `ImpactDetector`, `EnemyGrabInteractable`. Corregido tras la primera prueba en el visor: **mano abierta pega, mano cerrada agarra** — el puño se calla mientras el grip está apretado, y las manos pasan a `InputTriggerType.State` para que apretar antes de llegar sirva de algo. 263/263 verde (186 EditMode + 77 PlayMode), cobertura 90.4 %, 16 mutaciones detectadas. Escena regenerada. Después se subió el POC de 3 a **10 enemigos**, lo que obligó a ensanchar la banda de spawn a 7-9.5 m (186/186 EditMode en verde). **Falta volver a probarla en el visor.** |
 | 3 | ⬜ | | |
 | 4 | ⬜ | | |
 | 5 | ⬜ | | |

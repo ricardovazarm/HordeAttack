@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.XR.Interaction.Toolkit.Interactables;
 
 namespace HordeAttack
 {
@@ -33,6 +34,19 @@ namespace HordeAttack
 
         /// <summary>Below this a direction vector is treated as having no direction at all.</summary>
         const float k_DirectionEpsilon = 1e-6f;
+
+        /// <summary>
+        /// Seconds a freshly respawned enemy refuses to be picked up, in seconds.
+        /// </summary>
+        /// <remarks>
+        /// Long enough for the hand that was holding it to notice the creature is no longer inside
+        /// its trigger. Without it, recycling an enemy that someone still has hold of teleports it
+        /// home and the toolkit immediately hands it back — the player is left holding a creature
+        /// that officially respawned somewhere else. It is the same trick the template's
+        /// <c>NetworkSocketInteractor</c> plays when it switches its socket off for half a second
+        /// after spawning.
+        /// </remarks>
+        const float k_RespawnGrabBlock = 0.25f;
 
         static readonly List<HordeEnemy> s_All = new List<HordeEnemy>();
 
@@ -78,6 +92,8 @@ namespace HordeAttack
         LatchAnchor m_Anchor;
         EnemyLocomotion m_Locomotion;
         PointVelocityTracker m_Tracker;
+        XRGrabInteractable m_Grab;
+        float m_GrabbableFrom;
         IEnumerator m_FlashRoutine;
         IEnumerator m_DeathRoutine;
 
@@ -105,6 +121,40 @@ namespace HordeAttack
         public bool isLatched => m_Anchor != null;
 
         /// <summary>
+        /// Whether the grip may take hold of this enemy at all.
+        /// </summary>
+        /// <remarks>
+        /// The one lever that reliably gets a creature out of a hand, and the reason both cases go
+        /// through it. Asking the interaction manager to cancel a selection does not stick while the
+        /// player is still squeezing the grip: the creature is inside the hand's trigger, so the
+        /// toolkit hands it back on the next frame. What the toolkit <em>does</em> respect is an
+        /// interactable that says it cannot be selected, which it re-checks every frame — so a
+        /// corpse is dropped, and a recycled creature is not dragged back out of its spawn point.
+        /// </remarks>
+        public bool isGrabbable => isAlive && Time.time >= m_GrabbableFrom;
+
+        /// <summary>Whether a player has this enemy by the grip right now.</summary>
+        /// <remarks>
+        /// Read off the interactable rather than mirrored into a field of its own, for the same
+        /// reason <see cref="state"/> is derived: the toolkit already owns this fact, and a second
+        /// copy of it is a copy that can disagree.
+        /// </remarks>
+        public bool isHeld => m_Grab != null && m_Grab.isSelected;
+
+        /// <summary>
+        /// The hand holding this enemy, or null when nobody is.
+        /// </summary>
+        /// <remarks>
+        /// Published so a fist can tell whether the creature in front of it is the one it is
+        /// carrying. See <see cref="PunchDetector"/>: the punch trigger and the grip share a hand,
+        /// so a held enemy sits inside its own captor's trigger permanently.
+        /// </remarks>
+        public Transform holder =>
+            isHeld && m_Grab.interactorsSelecting.Count > 0
+                ? m_Grab.interactorsSelecting[0].transform
+                : null;
+
+        /// <summary>
         /// What this enemy is doing, derived from the parts that actually own it.
         /// </summary>
         /// <remarks>
@@ -118,6 +168,8 @@ namespace HordeAttack
             {
                 if (!isAlive)
                     return EnemyState.Dead;
+                if (isHeld)
+                    return EnemyState.Grabbed;
                 if (isLatched)
                     return EnemyState.Latched;
 
@@ -161,6 +213,7 @@ namespace HordeAttack
 
             TryGetComponent(out m_Locomotion);
             TryGetComponent(out m_Tracker);
+            TryGetComponent(out m_Grab);
 
             m_SpawnPosition = transform.position;
             m_SpawnRotation = transform.rotation;
@@ -205,12 +258,7 @@ namespace HordeAttack
 
             m_Health = outcome.remainingHealth;
 
-            // Let go before the impulse, not after. A latched enemy is kinematic and parented to the
-            // player, and AddForce on a kinematic body is silently discarded — the punch would take
-            // health off it and leave it hanging there, which reads as the hit not registering. An
-            // enemy caught mid-leap is kinematic for the same reason and needs the same release.
-            Detach();
-            m_Locomotion?.ReleaseForKnockback();
+            ReleaseToPhysics();
 
             // Set rather than added. A creature that was walking at the player carries momentum
             // straight into the punch, and adding to it would eat part of the knockback — so the
@@ -229,6 +277,68 @@ namespace HordeAttack
         }
 
         /// <summary>
+        /// Takes <paramref name="damage"/> from running into something at speed, and reports whether
+        /// there was anything to take it off.
+        /// </summary>
+        /// <remarks>
+        /// The throwing half of the fight, resolved by <see cref="ImpactDetector"/>. Unlike
+        /// <see cref="ReceivePunch"/> this applies no velocity of its own: the physics engine has
+        /// already bounced both bodies apart by the time it runs, and a scripted impulse on top would
+        /// double the response. What it does share is letting go first, and for the same reasons —
+        /// a creature that keeps clinging to the player through the hit is a creature the hit did
+        /// not visibly do anything to.
+        /// </remarks>
+        public bool ReceiveImpact(int damage)
+        {
+            if (damage <= 0 || !isAlive)
+                return false;
+
+            m_Health = Mathf.Max(0, m_Health - damage);
+
+            ReleaseToPhysics();
+
+            if (isAlive)
+                Flash();
+            else
+                Die();
+
+            return true;
+        }
+
+        /// <summary>
+        /// Lets go of everything that was moving this enemy, an instant before a player takes hold
+        /// of it with the grip.
+        /// </summary>
+        /// <remarks>
+        /// Called from <see cref="EnemyGrabInteractable.Grab"/> before the toolkit records what it
+        /// will restore on release. Doing it after would mean being dropped puts the creature back on
+        /// the player's chest, kinematic and frozen in the air.
+        /// <para>
+        /// Unlike the knockback release this asks for no recovery window. Nothing needs protecting
+        /// from the enemy's own locomotion while a hand owns the body — <see cref="EnemyLocomotion"/>
+        /// stands down for as long as <see cref="isHeld"/> is true.
+        /// </para>
+        /// </remarks>
+        internal void PrepareForGrab()
+        {
+            Detach();
+            m_Locomotion?.ReleaseForGrab();
+        }
+
+        /// <summary>
+        /// Puts the enemy back under its own power after the last hand lets go.
+        /// </summary>
+        /// <remarks>
+        /// The recovery window is the whole point: the toolkit applies the throw velocity at the end
+        /// of the frame, and without it the enemy's next walking step would overwrite that velocity
+        /// and the throw would end where it started.
+        /// </remarks>
+        internal void ReleaseFromGrab()
+        {
+            m_Locomotion?.ReleaseForKnockback();
+        }
+
+        /// <summary>
         /// Attaches this enemy to <paramref name="anchor"/>, riding along with the player from now
         /// on.
         /// </summary>
@@ -239,7 +349,10 @@ namespace HordeAttack
         /// </remarks>
         public void AttachTo(LatchAnchor anchor)
         {
-            if (anchor == null || !isAlive)
+            // A creature in someone's fist does not get to climb onto them. Locomotion already
+            // stands down while held, so this is the belt to that braces — and it is the guard that
+            // keeps a hand-held enemy from grabbing an anchor it would never let go of.
+            if (anchor == null || !isAlive || isHeld)
                 return;
 
             if (m_Anchor != null)
@@ -317,6 +430,13 @@ namespace HordeAttack
             StopRoutine(ref m_DeathRoutine);
             StopRoutine(ref m_FlashRoutine);
 
+            // Shut the door before knocking the hand off it, and both before the locomotion timers
+            // are cleared: prising the creature loose ends with ReleaseFromGrab arming a recovery
+            // window, and doing that later would leave the respawned enemy standing still for a
+            // second. The refusal has to come first or the hand simply takes it again.
+            m_GrabbableFrom = Time.time + k_RespawnGrabBlock;
+            ForceRelease();
+
             // Before the pose is restored: an enemy that died while holding on is still parented to
             // a player who has since walked off, and setting a world position on it would otherwise
             // be immediately re-interpreted through that parent.
@@ -342,6 +462,12 @@ namespace HordeAttack
 
         void Die()
         {
+            // Nothing here makes the hand let go, and that is on purpose: cancelling the selection
+            // does not survive a grip that is still held down, because the toolkit re-selects
+            // whatever is inside the hand on the very next frame. What actually gets a corpse out of
+            // the player's fist is EnemyGrabInteractable refusing to be selectable once the creature
+            // is dead, which the toolkit re-checks every frame.
+
             // Belt and braces: ReceivePunch already let go before applying the knockback, but a
             // corpse still riding on the player's shoulder is bad enough to be worth the second
             // check when a future caller kills an enemy some other way.
@@ -354,6 +480,45 @@ namespace HordeAttack
             // visibly throws the enemy instead of freezing it in place.
             if (isActiveAndEnabled)
                 RestartRoutine(ref m_DeathRoutine, DeathRoutine());
+        }
+
+        /// <summary>
+        /// Hands the body back to the physics engine so the hit that just landed can be seen.
+        /// </summary>
+        /// <remarks>
+        /// Shared by every way an enemy gets hurt, because both of them run into the same two traps.
+        /// A creature clinging to a player is kinematic and parented to it, so a velocity or an
+        /// impulse written to it is discarded without a word — the hit would take health off it and
+        /// leave it hanging there, which reads as nothing having happened. A creature caught mid-leap
+        /// is kinematic for the same reason. And the recovery window is what stops the enemy's own
+        /// locomotion from overwriting the response on the very next physics step.
+        /// </remarks>
+        void ReleaseToPhysics()
+        {
+            Detach();
+            m_Locomotion?.ReleaseForKnockback();
+        }
+
+        /// <summary>
+        /// Ends a hold that is in progress, now rather than on the next frame.
+        /// </summary>
+        /// <remarks>
+        /// Only half of getting a creature out of a hand, and useless on its own: it is
+        /// <see cref="isGrabbable"/> that stops the toolkit handing it straight back. Routed through
+        /// the interaction manager rather than the interactor because the manager owns the select
+        /// state, and going through it is what makes the hand run its own exit properly instead of
+        /// being left believing it still has something.
+        /// <para>
+        /// Dying does not need this at all. Refusing to be grabbable is enough on its own, and the
+        /// toolkit lets go within the frame.
+        /// </para>
+        /// </remarks>
+        void ForceRelease()
+        {
+            if (m_Grab == null || !m_Grab.isSelected || m_Grab.interactionManager == null)
+                return;
+
+            m_Grab.interactionManager.CancelInteractableSelection((IXRSelectInteractable)m_Grab);
         }
 
         /// <summary>

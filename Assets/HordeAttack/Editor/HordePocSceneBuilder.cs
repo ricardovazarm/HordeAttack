@@ -4,6 +4,8 @@ using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEngine.XR.Interaction.Toolkit.Interactables;
+using UnityEngine.XR.Interaction.Toolkit.Interactors;
 using XRMultiplayer;
 
 namespace HordeAttack.EditorTools
@@ -27,7 +29,12 @@ namespace HordeAttack.EditorTools
             "Assets/VRMPAssets/Prefabs/PlayerPrefabs/XRMPT_XR_Origin_Setup.prefab";
 
         /// <summary>Number of stationary reference dummies placed around the player.</summary>
-        public const int k_ReferenceDummyCount = 3;
+        /// <remarks>
+        /// Ten is enough for the fan to read as a horde rather than as a handful of test targets.
+        /// They still fit: at the mid spawn distance the arc leaves about a meter between neighbours,
+        /// several times an enemy's own width.
+        /// </remarks>
+        public const int k_ReferenceDummyCount = 10;
 
 
         public const string k_MaterialDirectory = "Assets/HordeAttack/Materials";
@@ -131,8 +138,43 @@ namespace HordeAttack.EditorTools
 
             Adopt(rig, scene);
             CenterRigOnArena(rig);
+            KeepTheGripOpenWhileHeld(rig);
             CreateHandVisuals(rig);
             CreatePlayerBody(rig);
+        }
+
+        /// <summary>
+        /// Makes the grip mean "my hand is open to grab" for as long as it is squeezed, instead of
+        /// only on the frame it is pressed.
+        /// </summary>
+        /// <remarks>
+        /// The template's rig ships its direct interactors on <c>StateChange</c>, where squeezing
+        /// with nothing in reach counts for a single frame and then stops counting. That is unusable
+        /// here, because <see cref="PunchDetector"/> now stands down while the grip is held: the
+        /// player has to be able to close their hand <em>before</em> arriving, or they punch the
+        /// creature away on the way in. Under <c>StateChange</c> squeezing early would suppress the
+        /// punch and then grab nothing — worse than either half on its own.
+        /// <para>
+        /// <c>State</c> also buys the other half of the gesture: hold the grip, keep still, and the
+        /// creature walking at you ends up in your fist.
+        /// </para>
+        /// <para>
+        /// Set from code rather than by editing the prefab's YAML, which is third-party and fragile —
+        /// the same reason the POC brings its own fists instead of patching the template's hands.
+        /// </para>
+        /// </remarks>
+        static void KeepTheGripOpenWhileHeld(GameObject rig)
+        {
+            var interactors = rig.GetComponentsInChildren<XRDirectInteractor>(true);
+            if (interactors.Length == 0)
+            {
+                Utils.LogWarning(
+                    "El rig no tiene ningún XRDirectInteractor; no se podrá agarrar nada con el grip.");
+                return;
+            }
+
+            foreach (var interactor in interactors)
+                interactor.selectActionTrigger = HordePocLayout.k_GripTrigger;
         }
 
         /// <summary>
@@ -403,18 +445,51 @@ namespace HordeAttack.EditorTools
                 // warning would fire constantly.
                 body.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
 
-                // Before HordeEnemy, which looks both of these up in Awake. It makes no difference
-                // to a scene loaded from disk, where every Awake runs after every component exists,
-                // but it is the order a test adding components at runtime has to use.
                 dummy.AddComponent<PointVelocityTracker>();
+
+                // HordeEnemy goes on before EnemyLocomotion, which declares
+                // [RequireComponent(typeof(HordeEnemy))]. The other way round Unity satisfies that
+                // requirement by creating a HordeEnemy itself, and the explicit AddComponent that
+                // follows is then refused — HordeEnemy is [DisallowMultipleComponent] — so the
+                // dummy would end up wired by accident rather than on purpose.
+                dummy.AddComponent<HordeEnemy>();
+                dummy.AddComponent<ImpactDetector>();
+                MakeGrabbable(dummy);
 
                 // Alternating, so the POC always shows both ways of arriving without needing a
                 // spawner to mix them.
                 dummy.AddComponent<EnemyLocomotion>().style =
                     i % 2 == 0 ? LatchStyle.Leaper : LatchStyle.Clinger;
-
-                dummy.AddComponent<HordeEnemy>();
             }
+        }
+
+        /// <summary>
+        /// Turns a dummy into something the grip can pick up and throw.
+        /// </summary>
+        /// <remarks>
+        /// Velocity tracking rather than kinematic movement, and that is the choice this whole phase
+        /// rests on: it leaves the Rigidbody dynamic while it is being carried, which is the only
+        /// movement type where letting go hands the creature the hand's real velocity instead of
+        /// dropping it on the spot. Throwing is the point.
+        /// <para>
+        /// Dynamic attach keeps the creature where it was grabbed instead of snapping its centre
+        /// into the palm. On an enemy clinging to the player's chest that difference is the whole
+        /// gesture — the player closes their grip on it where it actually is and pulls it off, rather
+        /// than watching it teleport into their hand first.
+        /// </para>
+        /// </remarks>
+        static void MakeGrabbable(GameObject dummy)
+        {
+            var grab = dummy.AddComponent<EnemyGrabInteractable>();
+
+            grab.movementType = XRBaseInteractable.MovementType.VelocityTracking;
+            grab.useDynamicAttach = true;
+            grab.throwOnDetach = true;
+
+            // Left on, which is what puts a released enemy back under the Dummies root rather than
+            // leaving it as a loose root object. HordeEnemy.Detach has already reparented it there
+            // by the time the toolkit records where to put it back.
+            grab.retainTransformParent = true;
         }
 
         /// <summary>Moves a freshly created root object into the scene being built.</summary>

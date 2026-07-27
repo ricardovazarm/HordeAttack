@@ -6,6 +6,8 @@ using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEngine.XR.Interaction.Toolkit.Interactables;
+using UnityEngine.XR.Interaction.Toolkit.Interactors;
 
 namespace HordeAttack.Tests
 {
@@ -259,6 +261,65 @@ namespace HordeAttack.Tests
                 Assert.That(speed, Is.LessThanOrEqualTo(EnemyLocomotionSettings.k_MaxMoveSpeed),
                     $"{dummy.name} closes at {speed:F1} m/s, above the " +
                     $"{EnemyLocomotionSettings.k_MaxMoveSpeed:F1} m/s the player can react to.");
+            }
+        }
+
+        /// <summary>
+        /// The grip half of the defence. Velocity tracking is not a preference here: it is the only
+        /// movement type that leaves the Rigidbody dynamic while it is carried, and therefore the
+        /// only one where letting go hands the creature the speed of the throw instead of dropping
+        /// it at the player's feet.
+        /// </summary>
+        [Test]
+        public void Build_MakesEveryDummyGrabbableAndThrowable()
+        {
+            foreach (var dummy in Dummies())
+            {
+                Assert.That(dummy.TryGetComponent<EnemyGrabInteractable>(out var grab), Is.True,
+                    $"{dummy.name} cannot be picked up with the grip.");
+                Assert.That(grab.movementType, Is.EqualTo(XRBaseInteractable.MovementType.VelocityTracking),
+                    $"{dummy.name} is carried as {grab.movementType}, so throwing it would just drop it.");
+                Assert.That(grab.throwOnDetach, Is.True,
+                    $"{dummy.name} does not carry any velocity when released.");
+            }
+        }
+
+        /// <summary>
+        /// The grip has to keep counting for as long as it is squeezed, not just on the frame it is
+        /// pressed.
+        /// </summary>
+        /// <remarks>
+        /// This is what makes the punch and the grab able to share a hand at all. The fist stands
+        /// down while the grip is held, so the player closes their hand before reaching — and under
+        /// the template's <c>StateChange</c> default that early squeeze counts for one frame and is
+        /// gone by the time the hand arrives. They would suppress their own punch and grab nothing.
+        /// </remarks>
+        [Test]
+        public void Build_LeavesTheGripOpenWhileItIsHeld()
+        {
+            var rig = Root(HordePocLayout.k_PlayerRigName);
+            Assert.That(rig, Is.Not.Null, "Player rig missing.");
+
+            var interactors = rig.GetComponentsInChildren<XRDirectInteractor>(true);
+            Assert.That(interactors, Is.Not.Empty, "The rig has nothing to grab with.");
+
+            foreach (var interactor in interactors)
+            {
+                Assert.That(interactor.selectActionTrigger,
+                    Is.EqualTo(XRBaseInputInteractor.InputTriggerType.State),
+                    $"'{interactor.name}' selects on {interactor.selectActionTrigger}, so squeezing " +
+                    "the grip before reaching an enemy stops counting a frame later and the hand " +
+                    "arrives empty.");
+            }
+        }
+
+        [Test]
+        public void Build_LetsEveryDummyHurtWhatItIsThrownInto()
+        {
+            foreach (var dummy in Dummies())
+            {
+                Assert.That(dummy.GetComponent<ImpactDetector>(), Is.Not.Null,
+                    $"{dummy.name} passes through everything it is thrown at without a mark.");
             }
         }
 

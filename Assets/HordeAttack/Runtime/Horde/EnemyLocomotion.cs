@@ -85,6 +85,15 @@ namespace HordeAttack
                 return;
             }
 
+            // A hand owns the body: the interactor drives it by writing velocity every physics step,
+            // and a walking velocity written here would fight it. Standing down is also what stops a
+            // held creature from trying to climb back onto the player who is carrying it.
+            if (m_Enemy.isHeld)
+            {
+                AbandonLeap();
+                return;
+            }
+
             // Already holding on: nothing to drive. The enemy rides the anchor's transform.
             if (m_Enemy.isLatched)
             {
@@ -266,6 +275,21 @@ namespace HordeAttack
             ReturnToPhysics();
 
             m_RecoveredAt = Time.time + m_Settings.knockbackRecovery;
+        }
+
+        /// <summary>
+        /// Gives the body up to a player's hand.
+        /// </summary>
+        /// <remarks>
+        /// The same handover as <see cref="ReleaseForKnockback"/> minus the recovery window, which
+        /// would be meaningless here: locomotion is already standing down for as long as the enemy
+        /// is held, so there is no walking step to hold off. A jump in progress is dropped, because a
+        /// creature snatched out of the air must not go on reserving the spot it was aiming for.
+        /// </remarks>
+        public void ReleaseForGrab()
+        {
+            AbandonLeap();
+            ReturnToPhysics();
         }
 
         /// <summary>

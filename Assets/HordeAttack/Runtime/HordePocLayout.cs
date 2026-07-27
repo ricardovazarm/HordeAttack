@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.XR.Interaction.Toolkit.Interactors;
 
 namespace HordeAttack
 {
@@ -40,6 +41,25 @@ namespace HordeAttack
             "Left Hand",
             "Right Hand",
         };
+
+        /// <summary>
+        /// How the player's hands decide that the grip counts as "I am holding on".
+        /// </summary>
+        /// <remarks>
+        /// <c>State</c> — squeezed means grabbing, for every frame it stays squeezed — rather than
+        /// the template's <c>StateChange</c>, where a squeeze with nothing in reach counts for a
+        /// single frame and then stops. That difference is what makes the punch and the grip able to
+        /// share a hand: <see cref="PunchDetector"/> stands down while the grip is held, so the
+        /// player has to be able to close their hand <em>before</em> reaching, or they knock the
+        /// creature away on the way in. It also buys holding still with a closed hand and letting a
+        /// creature walk into it.
+        /// <para>
+        /// Lives here because the scene builder sets it and the play mode tests have to build hands
+        /// that behave the same way. Both read this rather than each stating the choice separately.
+        /// </para>
+        /// </remarks>
+        public const XRBaseInputInteractor.InputTriggerType k_GripTrigger =
+            XRBaseInputInteractor.InputTriggerType.State;
 
         /// <summary>Diameter of the fist marker, roughly a closed adult hand, in meters.</summary>
         public const float k_FistDiameter = 0.11f;
@@ -196,7 +216,15 @@ namespace HordeAttack
         public const float k_SpawnNearDistance = 7f;
 
         /// <summary>Furthest an enemy starts from the player, in meters.</summary>
-        public const float k_SpawnFarDistance = 8.5f;
+        /// <remarks>
+        /// The width of the band is what staggers arrivals, so it has to grow with the size of the
+        /// group. The golden-ratio sequence leaves its closest pair about a eighteenth of the band
+        /// apart at ten enemies, which over 1.5 m was under 10 cm — close enough that two of them
+        /// walked in shoulder to shoulder and the horde read as a formation. 2.5 m puts that pair
+        /// back over a tenth of a meter. The near edge is left alone: it is tuned as an arrival
+        /// time, and only the tail of the wave gets later.
+        /// </remarks>
+        public const float k_SpawnFarDistance = 9.5f;
 
         /// <summary>
         /// Width of the fan enemies start in, in degrees, centered on the direction the player faces.
